@@ -8,7 +8,7 @@ I/O tools.
 import numpy as np
 from astropy.table import Table
 
-from desilutil.log import get_logger
+from desiutil.log import get_logger
 log = get_logger()
 
 def read_vi(vi_spectype=None, quality=2.5):

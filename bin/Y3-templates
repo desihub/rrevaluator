@@ -1,0 +1,221 @@
+#!/usr/bin/env python
+
+"""Evaluate the Y3 templates.
+
+* gather the coadds
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-specprod-results
+
+* Run Redrock with a few different priors:
+salloc -N 1 -C gpu -A desi -t 04:00:00 --qos interactive
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock
+
+* Build zvz QA:
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --redshift-qa --rrmethod=NMF
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --outliers-qa --rrmethod=NMF --overwrite
+
+* Summarize the results.
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --summarize --rrmethod=NMF
+
+"""
+import os, time, pdb
+import numpy as np
+import fitsio
+from astropy.table import Table, Column, hstack, vstack, join
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+
+from desitarget import geomask
+from fastspecfit.util import C_LIGHT
+
+from desiutil.log import get_logger#, DesiLogContext, WARNING
+log = get_logger()
+
+import seaborn as sns
+sns.set(context='talk', style='ticks', font_scale=0.9, palette='Set2')
+#sns.set(context='talk', style='ticks', palette='deep', font_scale=font_scale)#, rc=rc)
+colors = sns.color_palette()
+
+# redshift scan models / priors
+zscan_priors = {
+    '01': '-0.005,1.7,3e-4',
+    '02': '-0.005,4.0,3e-4'
+    }
+
+def read_inputsample(inputsample):
+    """Read the given sample.
+
+    """
+    from rrevaluator.io import read_vi
+
+    specprod = 'iron'
+
+    if inputsample == 'iron-vi-all':
+        sample = read_vi()
+    elif inputsample == 'iron-vi-main':
+        #sample = read_vi(main=True)
+        pass
+    elif inputsample == 'iron-main':
+        pass
+    elif inputsample == 'iron-redqso':
+        pass
+    
+    return sample, specprod
+
+
+def gather_coadds(inputsample, projectdir='.', overwrite=False):
+    """Gather the coadded spectra for the given sample.
+
+    """
+    from glob import glob
+    from desispec.io import read_spectra, write_spectra
+
+    outdir = os.path.join(projectdir, 'coadds', sample)
+    if not os.path.isdir(outdir):
+        os.makedirs(outdir, exist_ok=True)
+
+    sample, specprod = read_inputsample(inputsample)
+    
+    for tileid in sorted(set(sample['TILEID'])):
+        T = tileid == sample['TILEID']
+        petals = sample['FIBER'][T] // 500
+        for petal in sorted(set(petals)):
+            P = petal == petals
+            targetids = sample[T][P]['TARGETID'].data
+
+            coaddfile = os.path.join(outdir, f'coadd-{petal}-{tileid}.fits')
+            if not os.path.isfile(coaddfile) or overwrite:
+                orig_coaddfile = glob(os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, 'tiles',
+                                                   'cumulative', str(tileid), '*', f'coadd-{petal}-{tileid}-thru*.fits'))[0]
+                spec = read_spectra(orig_coaddfile, targetids=targetids)
+                assert(np.all(spec.target_ids() == targetids))
+                log.info(f'Writing {len(targetids)} targets to {coaddfile}')
+                write_spectra(coaddfile, spec)
+                
+            redrockfile = os.path.join(outdir, f'redrock-{petal}-{tileid}.fits')
+            rrdetailsfile = os.path.join(outdir, f'rrdetails-{petal}-{tileid}.h5')
+            if not os.path.isfile(redrockfile) or overwrite:
+                #cmd = f'-i {coaddfile} -o {redrockfile} -d {rrdetailsfile} --mp 24'
+                #cmd = f'-i {coaddfile} -o {redrockfile} --mp 24'
+                cmd = f'-i {coaddfile} -o {redrockfile} '
+                if rrdetails:
+                    cmd += f' -d {rrdetailsfile}'
+                if zscan_galaxy is not None:
+                    cmd += f' --zscan-galaxy={zscan_galaxy}'
+                if write_slurm:
+                    with open(slurmfile, 'a') as S:
+                        S.write(f'cmd="srun -n {ntasks} -c {cpus_per_task} rrdesi --negflux-nsig=5 --gpu --max-gpuprocs={max_gpuprocs} {cmd}"\n')
+                        S.write('echo $cmd\n')
+                        S.write('$cmd\n')
+                else:
+                    log.info(f'rrdesi {cmd} --gpu')
+                    rrdesi(cmd.split())
+            else:
+                log.info(f'Skipping existing file {redrockfile}')
+
+            # validate to create the summary catalog
+            if not write_slurm:
+                zcatfile = os.path.join(outdir, f'zcat-{petal}-{tileid}.fits')
+                zcat = validate(redrockfile, return_target_columns=True, 
+                                extra_columns=['TARGETID', 'Z', 'Z_RR', 'ZWARN', 'COADD_FIBERSTATUS', 'SPECTYPE', 'DELTACHI2'])
+                zcat.write(zcatfile, overwrite=True)
+                log.info(f'Wrote {len(zcat)} objects to {zcatfile}')
+
+
+
+def gather_redrock(inputsample, projectdir='.', overwrite=False):
+    """Gather the coadded spectra for the given sample.
+
+    """
+    from desispec.validredshifts import validate
+
+    # VI tiles - iron
+    out_zcatfile = os.path.join(projectdir, f'zcat-vitiles-templates-{specprod}.fits')
+    if not os.path.isfile(out_zcatfile) or overwrite:
+        # read and validate the iron results
+            
+        zcatdir = os.path.join(projectdir, f'redux-templates-{specprod}', 'vitiles')
+        if not os.path.isdir(zcatdir):
+            os.makedirs(zcatdir, exist_ok=True)
+    
+        vi = read_vi()
+        
+        for tileid in sorted(set(vi['TILEID'])):
+            T = tileid == vi['TILEID']
+            petals = vi['FIBER'][T] // 500
+            for petal in sorted(set(petals)):
+                P = petal == petals
+                targetids = vi[T][P]['TARGETID'].data
+    
+                zcatfile = os.path.join(zcatdir, f'zcat-{specprod}-{petal}-{tileid}.fits')
+                if not os.path.isfile(zcatfile) or overwrite:
+                    orig_redrockfile = glob(os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, 'tiles',
+                                                         'cumulative', str(tileid), '*', f'redrock-{petal}-{tileid}-thru*.fits'))[0]
+    
+                    zcat = validate(orig_redrockfile, return_target_columns=True,
+                                    extra_columns=['TARGETID', 'Z', 'Z_RR', 'ZWARN', 'COADD_FIBERSTATUS', 'SPECTYPE', 'DELTACHI2'])
+                    zcat = zcat[geomask.match_to(zcat['TARGETID'], targetids)]
+                    assert(np.all(zcat['TARGETID'] == targetids))
+                    zcat.write(zcatfile, overwrite=True)
+                    log.info(f'Wrote {len(zcat)} objects to {zcatfile}')
+
+        # now gather everything up and write out the merged catalog
+        zcatfiles = glob(os.path.join(zcatdir, f'zcat-{specprod}-[0-9]-?????.fits'))
+        zcat = vstack([Table(fitsio.read(zcatfile)) for zcatfile in zcatfiles])
+        zcat = join(zcat, vi, keys='TARGETID')
+        zcat.write(out_zcatfile, overwrite=True)
+        log.info(f'Wrote {len(zcat):,d} objects to {out_zcatfile}')
+
+
+def main():
+    """Main wrapper."""
+
+    import argparse
+
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    parser.add_argument('--projectdir', default=None, help='Top-level output directory.')
+    parser.add_argument('--templatedir', default=None, help='Template location.')
+    parser.add_argument('--targetclass', default=None, type=str, help='Target class to process')
+    parser.add_argument('--mp', default=1, type=int, help='Number of multiprocessing processes per MPI rank or node.')
+    parser.add_argument('--zscan-prior', default='zscan01', type=str, help='Galaxy redshift scan prior.')
+
+    parser.add_argument('--inputsample', choices=['iron-vi-all', 'iron-vi-main', 'iron-main', 'iron-redqso'],
+                        type=str, help='Input sample to analyze.')
+    parser.add_argument('--gather-coadds', action='store_true', help='Gather the coadded spectra.')
+    parser.add_argument('--run-redrock', action='store_true', help='Gather the coadded spectra.')
+    parser.add_argument('--gather-redrock', action='store_true', help='Gather the Redrock fitting results.')
+
+    parser.add_argument('--overwrite', action='store_true', help='Overwrite existing files.')
+    args = parser.parse_args()
+
+    if args.projectdir is None:
+        projectdir = os.path.join(os.getenv('DESI_ROOT'), 'users', 'ioannis', 'Y3-templates')
+        
+    if not os.path.isdir(args.projectdir):
+        os.makedirs(args.projectdir, exist_ok=True)
+
+    # https://docs.nersc.gov/development/languages/python/parallel-python/#use-the-spawn-start-method
+    if args.mp > 1 and 'NERSC_HOST' in os.environ:
+        import multiprocessing
+        multiprocessing.set_start_method('spawn')
+
+    if args.targetclass is not None:
+        targetclasses = [args.targetclass]
+    else:
+        targetclasses = ['BGS', 'LRG', 'ELG', 'QSO']
+
+    # gather the coadds
+    if args.gather_coadds:
+        gather_coadds(inputsample=args.inputsample, projectdir=args.projectdir, overwrite=args.overwrite)
+        
+    # run Redrock
+    if args.run_redrock:
+        gather_coadds(inputsample=args.inputsample, projectdir=args.projectdir, overwrite=args.overwrite)
+        
+    # gather the Redrock fitting results
+    if args.gather_redrock:
+        gather_redrock(inputsample=args.inputsample, projectdir=args.projectdir, overwrite=args.overwrite)
+        
+if __name__ == '__main__':
+    main()
+    

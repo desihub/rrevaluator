@@ -7,7 +7,7 @@ General utilities.
 """
 import numpy as np
 
-from desilutil.log import get_logger
+from desiutil.log import get_logger
 log = get_logger()
 
 def zstats(z, ztrue, vcut=1e3):
