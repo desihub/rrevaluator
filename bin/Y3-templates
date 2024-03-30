@@ -2,15 +2,26 @@
 
 """Evaluate the Y3 templates.
 
-* gather the coadds
+* Gather the coadds.
 time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-cumulative-vi-all
 time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-cumulative-vi-main
 time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-pernight-vi-all
 time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-pernight-vi-main
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-main-subset
 
-* Run Redrock
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-vi-all --templates=PCA-iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-vi-main --templates=PCA-iron
+* Run Redrock (or copy from an existing specprod).
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-cumulative-vi-all --templates=PCA-Iron
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-cumulative-vi-main --templates=PCA-Iron
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-pernight-vi-all --templates=PCA-Iron
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-pernight-vi-main --templates=PCA-Iron
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-main-subset --templates=PCA-Iron
+
+* Gather and validate Redrock fitting results
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-cumulative-vi-all --templates=PCA-Iron
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-cumulative-vi-main --templates=PCA-Iron
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-pernight-vi-all --templates=PCA-Iron
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-pernight-vi-main --templates=PCA-Iron
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-main-subset --templates=PCA-Iron
 
 
 salloc -N 1 -C gpu -A desi -t 04:00:00 --qos interactive
@@ -52,7 +63,7 @@ def read_inputsample(inputsample, projectdir='.'):
     """Read the given sample.
 
     """
-    from rrevaluator.io import read_vi
+    from rrevaluator.io import read_vi, read_iron_main_subset
 
     specprod = 'iron'
 
@@ -72,9 +83,9 @@ def read_inputsample(inputsample, projectdir='.'):
     elif inputsample == 'iron-pernight-vi-main':
         coadd_type = 'pernight'
         sample = read_vi(main=True, samplefile=os.path.join(sampledir, 'sample-iron-vi-main.fits'))
-    elif inputsample == 'iron-cumulative-main':
+    elif inputsample == 'iron-main-subset':
         coadd_type = 'cumulative'
-        #sample = read_vi(main=True, samplefile=os.path.join(sampledir, 'sample-iron-vi-main.fits'))
+        sample = read_iron_main_subset(samplefile=os.path.join(sampledir, 'sample-iron-main-subset.fits'))
     elif inputsample == 'iron-redqso':
         coadd_type = 'cumulative'
     else:
@@ -130,44 +141,35 @@ def gather_coadds(inputsample, projectdir='.', pernight=False, overwrite=False):
                         log.info(f'Skipping existing file {coaddfile}')
 
 
-def run_redrock(inputsample, projectdir='.', templates='PCA-Iron', zscan_prior='zscan01', overwrite=False):
-    """Run Redrock on the input sample.
+def _copy_from_specprod(sample, specprod, coadd_type, outdir, overwrite):
+    """Copy existing Redrock+afterburner files from an existing specprod.
 
     """
     from redrock.results import read_zscan, write_zscan
     
-    sample, specprod, coadd_type = read_inputsample(inputsample, projectdir=projectdir)
+    for tileid in sorted(set(sample['TILEID'])):
+        T = tileid == sample['TILEID']
+        petals = sample['FIBER'][T] // 500
+        for petal in sorted(set(petals)):
+            P = petal == petals
+            targetids = sample[T][P]['TARGETID'].data
 
-    redrockrun = f'{templates}-{zscan_prior}'
-
-    outdir = os.path.join(projectdir, 'redrock', inputsample, redrockrun)
-    if not os.path.isdir(outdir):
-        os.makedirs(outdir, exist_ok=True)
-
-    # old templates - just copy over the relevant files
-    if templates == 'PCA-Iron':
-        for tileid in sorted(set(sample['TILEID'])):
-            T = tileid == sample['TILEID']
-            petals = sample['FIBER'][T] // 500
-            for petal in sorted(set(petals)):
-                P = petal == petals
-                targetids = sample[T][P]['TARGETID'].data
-
+            origdir = os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, 'tiles', coadd_type, str(tileid))
+            if coadd_type == 'cumulative':
                 redrockfile = os.path.join(outdir, f'redrock-{petal}-{tileid}.fits')
                 rrdetailsfile = os.path.join(outdir, f'rrdetails-{petal}-{tileid}.h5')
                 if not os.path.isfile(redrockfile) or overwrite:
-                    origdir = os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, 'tiles', 'cumulative', str(tileid))
                     orig_redrockfile = glob(os.path.join(origdir, '*', f'redrock-{petal}-{tileid}-thru*.fits'))[0]
                     origdir = os.path.dirname(orig_redrockfile)
                     thrunight = os.path.basename(origdir)
                     orig_rrdetailsfile = os.path.join(origdir, f'rrdetails-{petal}-{tileid}-thru{thrunight}.h5')
-
+    
                     alltargetids = fitsio.read(orig_redrockfile, ext='REDSHIFTS', columns='TARGETID')
                     rows = np.where(np.isin(alltargetids, targetids))[0]
-
+    
                     zbest = fitsio.read(orig_redrockfile, ext='REDSHIFTS', rows=rows)
                     fm = fitsio.read(orig_redrockfile, ext='FIBERMAP', rows=rows)
-
+    
                     I = geomask.match_to(zbest['TARGETID'], targetids)
                     zbest = zbest[I]
                     fm = fm[I]
@@ -177,98 +179,122 @@ def run_redrock(inputsample, projectdir='.', templates='PCA-Iron', zscan_prior='
                     log.info(f'Writing {redrockfile}')
                     fitsio.write(redrockfile, zbest, extname='REDSHIFTS', clobber=True)
                     fitsio.write(redrockfile, fm, extname='FIBERMAP')
-
+    
                     zscan, zfit = read_zscan(orig_rrdetailsfile, select_targetids=targetids)
-                    assert(np.all(np.unique(zfit['targetid']) == targetids))
+                    assert(len(np.unique(zfit['targetid']) == len(targetids)))
                     log.info(f'Writing {rrdetailsfile}')
                     write_zscan(rrdetailsfile, zscan, zfit, clobber=True)
-
+    
                     for afterprefix, extname in zip(['qso_qn', 'qso_mgii', 'emline'], ['QN_RR', 'MGII', 'EMLINEFIT']):
                         orig_afterfile = os.path.join(origdir, f'{afterprefix}-{petal}-{tileid}-thru{thrunight}.fits')
                         afterfile = os.path.join(outdir, f'{afterprefix}-{petal}-{tileid}.fits')
-
+    
                         after = fitsio.read(orig_afterfile, rows=rows, ext=extname)
                         after = after[I]
                         assert(np.all(after['TARGETID'] == targetids))
-
+    
                         log.info(f'Writing {afterfile}')
                         fitsio.write(afterfile, after, extname=extname, clobber=True)
                 else:
                     log.info(f'Skipping existing file {redrockfile}')
+            elif coadd_type == 'pernight':
+                nightdirs = glob(os.path.join(origdir, '????????'))
+                for nightdir in nightdirs:
+                    night = os.path.basename(nightdir)
+                    redrockfile = os.path.join(outdir, f'redrock-{petal}-{tileid}-{night}.fits')
+                    rrdetailsfile = os.path.join(outdir, f'rrdetails-{petal}-{tileid}-{night}.h5')
+                    if not os.path.isfile(redrockfile) or overwrite:
+                        orig_redrockfile = os.path.join(nightdir, f'redrock-{petal}-{tileid}-{night}.fits')
+                        orig_rrdetailsfile = os.path.join(nightdir, f'rrdetails-{petal}-{tileid}-{night}.h5')
+                        # not all pernight petals exist
+                        if os.path.isfile(orig_redrockfile):
+                            alltargetids = fitsio.read(orig_redrockfile, ext='REDSHIFTS', columns='TARGETID')
+                            rows = np.where(np.isin(alltargetids, targetids))[0]
+            
+                            zbest = fitsio.read(orig_redrockfile, ext='REDSHIFTS', rows=rows)
+                            fm = fitsio.read(orig_redrockfile, ext='FIBERMAP', rows=rows)
+            
+                            I = geomask.match_to(zbest['TARGETID'], targetids)
+                            zbest = zbest[I]
+                            fm = fm[I]
+                            assert(np.all(zbest['TARGETID'] == targetids))
+                            assert(np.all(fm['TARGETID'] == targetids))
+                
+                            log.info(f'Writing {redrockfile}')
+                            fitsio.write(redrockfile, zbest, extname='REDSHIFTS', clobber=True)
+                            fitsio.write(redrockfile, fm, extname='FIBERMAP')
+            
+                            zscan, zfit = read_zscan(orig_rrdetailsfile, select_targetids=targetids)
+                            assert(np.all(np.unique(zfit['targetid']) == targetids))
+                            log.info(f'Writing {rrdetailsfile}')
+                            write_zscan(rrdetailsfile, zscan, zfit, clobber=True)
+            
+                            for afterprefix, extname in zip(['qso_qn', 'qso_mgii', 'emline'], ['QN_RR', 'MGII', 'EMLINEFIT']):
+                                orig_afterfile = os.path.join(nightdir, f'{afterprefix}-{petal}-{tileid}-{night}.fits')
+                                afterfile = os.path.join(outdir, f'{afterprefix}-{petal}-{tileid}-{night}.fits')
+            
+                                after = fitsio.read(orig_afterfile, rows=rows, ext=extname)
+                                after = after[I]
+                                assert(np.all(after['TARGETID'] == targetids))
+            
+                                log.info(f'Writing {afterfile}')
+                                fitsio.write(afterfile, after, extname=extname, clobber=True)
+                    else:
+                        log.info(f'Skipping existing file {redrockfile}')
+                        
+
+def run_redrock(inputsample, projectdir='.', templates='PCA-Iron', zscan_prior='zscan01', overwrite=False):
+    """Run Redrock on the input sample.
+
+    """
+    sample, specprod, coadd_type = read_inputsample(inputsample, projectdir=projectdir)
+
+    redrockrun = f'{templates}-{zscan_prior}'
+
+    redrockdir = os.path.join(projectdir, 'redrock', inputsample, redrockrun)
+    if not os.path.isdir(redrockdir):
+        os.makedirs(redrockdir, exist_ok=True)
+
+    # old templates and redshift scan just copy over the relevant files
+    if templates == 'PCA-Iron' and zscan_prior == 'zscan01':
+        _copy_from_specprod(sample, specprod, coadd_type, redrockdir, overwrite)
+    else:
+        print('build the slurm script here')
 
 
-def gather_redrock(inputsample, projectdir='.', overwrite=False):
-    """Gather the coadded spectra for the given sample.
+def gather_redrock(inputsample, projectdir='.', templates='PCA-Iron', zscan_prior='zscan01', overwrite=False):
+    """Gather and validate Redrock fitting results for a given sample, templates,
+    and redshift scan.
 
     """
     from desispec.validredshifts import validate
 
-    # VI tiles - iron
-    out_zcatfile = os.path.join(projectdir, f'zcat-vitiles-templates-{specprod}.fits')
+    sample, specprod, coadd_type = read_inputsample(inputsample, projectdir=projectdir)
+
+    redrockrun = f'{templates}-{zscan_prior}'
+
+    out_zcatfile = os.path.join(projectdir, f'zcat-{inputsample}-{templates}-{zscan_prior}.fits')
     if not os.path.isfile(out_zcatfile) or overwrite:
         # read and validate the iron results
-            
-        zcatdir = os.path.join(projectdir, f'redux-templates-{specprod}', 'vitiles')
-        if not os.path.isdir(zcatdir):
-            os.makedirs(zcatdir, exist_ok=True)
-    
-        vi = read_vi()
-        
-        for tileid in sorted(set(vi['TILEID'])):
-            T = tileid == vi['TILEID']
-            petals = vi['FIBER'][T] // 500
-            for petal in sorted(set(petals)):
-                P = petal == petals
-                targetids = vi[T][P]['TARGETID'].data
-    
-                zcatfile = os.path.join(zcatdir, f'zcat-{specprod}-{petal}-{tileid}.fits')
-                if not os.path.isfile(zcatfile) or overwrite:
-                    orig_redrockfile = glob(os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, 'tiles',
-                                                         'cumulative', str(tileid), '*', f'redrock-{petal}-{tileid}-thru*.fits'))[0]
-    
-                    zcat = validate(orig_redrockfile, return_target_columns=True,
-                                    extra_columns=['TARGETID', 'Z', 'Z_RR', 'ZWARN', 'COADD_FIBERSTATUS', 'SPECTYPE', 'DELTACHI2'])
-                    zcat = zcat[geomask.match_to(zcat['TARGETID'], targetids)]
-                    assert(np.all(zcat['TARGETID'] == targetids))
-                    zcat.write(zcatfile, overwrite=True)
-                    log.info(f'Wrote {len(zcat)} objects to {zcatfile}')
 
-        # now gather everything up and write out the merged catalog
-        zcatfiles = glob(os.path.join(zcatdir, f'zcat-{specprod}-[0-9]-?????.fits'))
-        zcat = vstack([Table(fitsio.read(zcatfile)) for zcatfile in zcatfiles])
-        zcat = join(zcat, vi, keys='TARGETID')
+        redrockdir = os.path.join(projectdir, 'redrock', inputsample, redrockrun)
+        if not os.path.isdir(redrockdir):
+            log.warning(f'Missing {redrockdir}')
+            return
+
+        redrockfiles = glob(os.path.join(redrockdir, 'redrock-*.fits'))
+        zcats = []
+        for redrockfile in redrockfiles:
+            zcat = validate(redrockfile, return_target_columns=True,
+                            extra_columns=['TARGETID', 'Z', 'Z_RR', 'ZWARN', 'COADD_FIBERSTATUS', 'SPECTYPE', 'DELTACHI2'])
+            log.info(f'Validated {len(zcat)} targets from {redrockfile}')
+            zcats.append(zcat)
+        zcat = vstack(zcats)
+
+        # join on sample; note that pernight coadds will have many duplicates
+        zcat = join(zcat, sample, keys='TARGETID')
         zcat.write(out_zcatfile, overwrite=True)
         log.info(f'Wrote {len(zcat):,d} objects to {out_zcatfile}')
-
-#            redrockfile = os.path.join(outdir, f'redrock-{petal}-{tileid}.fits')
-#            rrdetailsfile = os.path.join(outdir, f'rrdetails-{petal}-{tileid}.h5')
-#            if not os.path.isfile(redrockfile) or overwrite:
-#                #cmd = f'-i {coaddfile} -o {redrockfile} -d {rrdetailsfile} --mp 24'
-#                #cmd = f'-i {coaddfile} -o {redrockfile} --mp 24'
-#                cmd = f'-i {coaddfile} -o {redrockfile} '
-#                if rrdetails:
-#                    cmd += f' -d {rrdetailsfile}'
-#                if zscan_galaxy is not None:
-#                    cmd += f' --zscan-galaxy={zscan_galaxy}'
-#                if write_slurm:
-#                    with open(slurmfile, 'a') as S:
-#                        S.write(f'cmd="srun -n {ntasks} -c {cpus_per_task} rrdesi --negflux-nsig=5 --gpu --max-gpuprocs={max_gpuprocs} {cmd}"\n')
-#                        S.write('echo $cmd\n')
-#                        S.write('$cmd\n')
-#                else:
-#                    log.info(f'rrdesi {cmd} --gpu')
-#                    rrdesi(cmd.split())
-#            else:
-#                log.info(f'Skipping existing file {redrockfile}')
-#
-#            # validate to create the summary catalog
-#            if not write_slurm:
-#                zcatfile = os.path.join(outdir, f'zcat-{petal}-{tileid}.fits')
-#                zcat = validate(redrockfile, return_target_columns=True, 
-#                                extra_columns=['TARGETID', 'Z', 'Z_RR', 'ZWARN', 'COADD_FIBERSTATUS', 'SPECTYPE', 'DELTACHI2'])
-#                zcat.write(zcatfile, overwrite=True)
-#                log.info(f'Wrote {len(zcat)} objects to {zcatfile}')
-#
 
 
 def main():
@@ -286,7 +312,7 @@ def main():
 
     parser.add_argument('--inputsample', choices=['iron-cumulative-vi-all', 'iron-cumulative-vi-main',
                                                   'iron-pernight-vi-all', 'iron-pernight-vi-main',
-                                                  'iron-cumulative-main', 'iron-redqso'],
+                                                  'iron-main-subset', 'iron-redqso'],
                         type=str, help='Input sample to analyze.')
     parser.add_argument('--templates', choices=['PCA-Iron'],
                         type=str, help='Redrock templates.')
@@ -299,7 +325,8 @@ def main():
     args = parser.parse_args()
 
     if args.projectdir is None:
-        args.projectdir = os.path.join(os.getenv('DESI_ROOT'), 'users', 'ioannis', 'Y3-templates')
+        #args.projectdir = os.path.join(os.getenv('DESI_ROOT'), 'users', 'ioannis', 'Y3-templates')
+        args.projectdir = os.path.join(os.getenv('PSCRATCH'), 'Y3-templates')
         
     if not os.path.isdir(args.projectdir):
         os.makedirs(args.projectdir, exist_ok=True)
