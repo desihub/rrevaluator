@@ -1,2 +1,3 @@
 # rrevaluator
-Evaluating redrock performance
+Tools to evaluate Redrock performance.
+
