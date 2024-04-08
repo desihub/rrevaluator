@@ -71,9 +71,7 @@ def sample_tiles(input_tiles, conditions, random_seed=55):
     return tileids, ntiles
 
 def main():
-    """Main wrapper."""
-    from rrevaluator.io import read_vi, read_iron_main_subset
-    
+    """Main wrapper."""    
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--specprod', default='iron', type=str, help='Spectroscopic production run (i.e. iron)')
     parser.add_argument('--output-path', default='./', type=str, help='Output path to write the results (i.e.: ./)')
