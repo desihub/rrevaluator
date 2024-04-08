@@ -1,0 +1,121 @@
+#!/usr/bin/env python 
+
+
+"""
+Select tiles from a given spectroscopic production run to evaluate redshift fitting
+"""
+
+import fitsio
+import argparse
+import os
+import sys
+import numpy as np
+import itertools
+import pandas as pd
+from desiutil.log import get_logger
+log = get_logger()
+
+def sample_tiles(input_tiles, conditions, random_seed=55):
+    """
+    Samples a list of tiles based on specified conditions.
+
+    Parameters:
+    - input_tiles (numpy.ndarray): An array containing tile data.
+    - conditions (list): A list of conditions to sample over.
+    - random_seed (int): Seed value for random number generation. Default is 55.
+
+    Returns:
+    - tileids (list): A list of tile IDs sampled based on the conditions.
+    - ntiles (list): A list containing the number of tiles sampled for each permutation.
+
+    This function samples a list of tiles by considering all possible permutations of 
+    ranges (LOW, MIDDLE, and HIGH) over the specified conditions. 
+    For each permutation, tiles are selected based on whether they fall within 
+    the corresponding range for each condition.
+
+    Example:
+    ```
+    input_tiles = np.array([...])  # Array containing tile data
+    conditions = ['feature1', 'feature2']  # List of conditions
+    tileids, ntiles = sample_tiles(input_tiles, conditions)
+    ```
+    """
+    
+    np.random.seed(random_seed)
+    
+    # Determine the boundaries for the three different regions: LOW, MIDDLE, HIGH
+    subset_percent = {}
+    for c in conditions:
+        subset_percent[c] = np.percentile(input_tiles[c],[0,33,66,100]) 
+    elements = [0, 1, 2] # three elements corresponding to LOW, MIDDLE, HIGH.
+
+    # Generate all possible permutations of the three different regions (LOW, MIDDLE, HIGH) over all the 'conditions'
+    n_c = len(conditions)
+    permutations = list(itertools.product(elements, repeat=n_c))
+    
+    tileids = []
+    ntiles = []
+    # Store the tiles that fall into the ranges for each permutation
+    for perm in permutations:
+        a = list(perm)
+        is_in_permutation = np.array([True] * len(input_tiles))
+        for i, c in enumerate(conditions):
+            is_in_condition = (input_tiles[c]>=subset_percent[c][a[i]]) & (input_tiles[c]<=subset_percent[c][a[i]+1])
+            is_in_permutation &= is_in_condition
+        tmp_tiles = input_tiles[is_in_permutation]
+        random_indices = np.random.choice(tmp_tiles.shape[0], size=1, replace=False)
+        random_tile = tmp_tiles[random_indices]
+        tileids.append(random_tile['TILEID'][0])
+        ntiles.append(np.count_nonzero(is_in_permutation))
+
+    return tileids, ntiles
+
+def main():
+    """Main wrapper."""
+    from rrevaluator.io import read_vi, read_iron_main_subset
+    
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('--specprod', default='iron', type=str, help='Spectroscopic production run (i.e. iron)')
+    parser.add_argument('--output-path', default='./', type=str, help='Output path to write the results (i.e.: ./)')
+    parser.add_argument("--random-seed", type=int, default=42, help="Random seed value (default: 42)")
+    args = parser.parse_args()
+
+    # Read the tiles from the spectroscopic production
+    tiles_file = os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', args.specprod, f'tiles-{args.specprod}.fits')
+    try:
+        prod_tiles = fitsio.read(tiles_file)
+        log.info(f'Read file {tiles_file}')
+    except Exception as e:
+        log.info(f'Exception {e}')
+        sys.exit(1)
+        
+    # Booleans to select tiles with different conditions
+    is_main = prod_tiles['SURVEY']=='main'
+    is_dark = prod_tiles['PROGRAM']=='dark'
+    is_bright = prod_tiles['PROGRAM']=='bright'
+        
+    #tile conditions over which we are going to make the selection in ranges LOW, MIDDLE, HIGH
+    conditions = ['EXPTIME', 'EFFTIME_SPEC', 'TILEDEC']
+        
+    # select from main dark tiles
+    dark_tiles = prod_tiles[['TILEID']+conditions][is_main & is_dark]
+    darkids, ndark = sample_tiles(dark_tiles, conditions, random_seed=args.random_seed)
+    
+    # select from main bright tiles
+    bright_tiles = prod_tiles[['TILEID']+conditions][is_main & is_bright]
+    brightids, nbright = sample_tiles(bright_tiles, conditions, random_seed=args.random_seed)
+    
+    # concatenate results 
+    output = {}
+    output['TILEID'] = darkids+brightids
+    output['NTILE_SIMILAR'] = ndark+nbright
+    df = pd.DataFrame.from_dict(output)
+    
+    # Save the DataFrame to a CSV file
+    outfile = os.path.join(args.output_path, f'sample_test_tiles_{args.specprod}.csv')
+    log.info(f'Writing results to file {outfile}')
+    df.to_csv(outfile, index=False)
+    
+if __name__ == '__main__':
+    main()
+    
