@@ -9,7 +9,7 @@ import os, pdb
 import fitsio
 import numpy as np
 from glob import glob
-from astropy.table import Table, vstack
+from astropy.table import Table, vstack, join
 
 from desiutil.log import get_logger
 log = get_logger()
@@ -53,27 +53,58 @@ def read_vi(quality=2.5, vi_spectype=None, samplefile=None, veto_fibers=True, ma
 
     # trim to main targets only
     if main:
-        from desitarget.io import read_targets_in_tiles
+        if False:
+            from desitarget.io import read_targets_in_tiles
+    
+            log.info('Building main target list (this will take a little while).')
+    
+            tiles_edr = Table(fitsio.read('/global/cfs/cdirs/desi/public/edr/spectro/redux/fuji/tiles-fuji.fits'))
+            tiles_sv = tiles_edr[((tiles_edr['SURVEY']=='sv3') | (tiles_edr['SURVEY']=='sv1')) & (tiles_edr['PROGRAM']!='backup')]
+            tiles_sv['RA'], tiles_sv['DEC'] = tiles_sv['TILERA'], tiles_sv['TILEDEC']
+    
+            hpdirname = '/global/cfs/cdirs/desi/target/catalogs/dr9/1.1.1/targets/main/resolve/dark'
+            main_dark = Table(read_targets_in_tiles(hpdirname, tiles=tiles_sv, quick=True))
+            assert(np.unique(main_dark["TARGETID"]).size == len(main_dark))
+    
+            hpdirname = '/global/cfs/cdirs/desi/target/catalogs/dr9/1.1.1/targets/main/resolve/bright'
+            main_bright = Table(read_targets_in_tiles(hpdirname, tiles=tiles_sv, quick=True))
+            assert(np.unique(main_bright["TARGETID"]).size == len(main_bright))
+    
+            in_dark = np.isin(allvi['TARGETID'], main_dark['TARGETID'])
+            in_bright = np.isin(allvi['TARGETID'], main_bright['TARGETID'])
+            I = in_dark | in_bright
+        else:
+            from desispec.io.photo import gather_tractorphot
+            from desitarget.cuts import select_targets
+            from desitarget.targetmask import desi_mask
 
-        log.info('Building main target list (this will take a little while).')
+            if samplefile is None:
+                import tempfile
+                _, catfile = tempfile.mkstemp(suffix='.fits', dir='/tmp')
+            else:
+                from desispec.io.util import replace_prefix
+                catfile = replace_prefix(samplefile, 'sample', 'tractor')
 
-        tiles_edr = Table(fitsio.read('/global/cfs/cdirs/desi/public/edr/spectro/redux/fuji/tiles-fuji.fits'))
-        tiles_sv = tiles_edr[((tiles_edr['SURVEY']=='sv3') | (tiles_edr['SURVEY']=='sv1')) & (tiles_edr['PROGRAM']!='backup')]
-        tiles_sv['RA'], tiles_sv['DEC'] = tiles_sv['TILERA'], tiles_sv['TILEDEC']
+            log.info(f'Gathering Tractor photometry for {len(allvi)} objects.')
+            cat = gather_tractorphot(allvi)
+            cat.write(catfile, overwrite=True)
+            log.info(f'Wrote {catfile}')
 
-        hpdirname = '/global/cfs/cdirs/desi/target/catalogs/dr9/1.1.1/targets/main/resolve/dark'
-        main_dark = Table(read_targets_in_tiles(hpdirname, tiles=tiles_sv, quick=True))
-        assert(np.unique(main_dark["TARGETID"]).size == len(main_dark))
+            cat = Table(select_targets(catfile, backup=False))
 
-        hpdirname = '/global/cfs/cdirs/desi/target/catalogs/dr9/1.1.1/targets/main/resolve/bright'
-        main_bright = Table(read_targets_in_tiles(hpdirname, tiles=tiles_sv, quick=True))
-        assert(np.unique(main_bright["TARGETID"]).size == len(main_bright))
+            ilrg = cat['DESI_TARGET'] & desi_mask.LRG != 0
+            ielg = cat['DESI_TARGET'] & desi_mask.ELG != 0
+            iqso = cat['DESI_TARGET'] & desi_mask.QSO != 0
+            ibgs = cat['DESI_TARGET'] & desi_mask.BGS_ANY != 0
+            imain = np.where(np.logical_or.reduce((ilrg, ielg, iqso, ibgs)))[0]
+            
+            
+            
 
-        in_dark = np.isin(allvi['TARGETID'], main_dark['TARGETID'])
-        in_bright = np.isin(allvi['TARGETID'], main_bright['TARGETID'])
-        I = in_dark | in_bright
+            pdb.set_trace()
+            
         log.info(f'Trimming to {np.sum(I):,d}/{len(allvi):,d} main-survey targets.')
-        
+            
         allvi = allvi[I]
 
     # write out

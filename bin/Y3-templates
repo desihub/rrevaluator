@@ -306,9 +306,9 @@ def run_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01',
             S.write(f'#SBATCH --output={slurmfile.replace(".slurm", "-%j.log")}\n')
             S.write('\n')
             S.write('source /global/common/software/desi/desi_environment.sh main\n')
-            for package in ['redrock', 'desispec']:
-                S.write('export PATH=${HOME}/code/desihub/'+f'{package}/bin:'+'${PATH}\n')
-                S.write('export PYTHONPATH=${HOME}/code/desihub/'+f'{package}/py:'+'${PYTHONPATH}\n')
+            #for package in ['redrock', 'desispec']:
+            #    S.write('export PATH=${HOME}/code/desihub/'+f'{package}/bin:'+'${PATH}\n')
+            #    S.write('export PYTHONPATH=${HOME}/code/desihub/'+f'{package}/py:'+'${PYTHONPATH}\n')
             S.write(f'export RR_TEMPLATE_DIR={rrtemplatedir}\n')
             S.write('\n')
             #srun -N 2 -n 8 -c 2 --gpu-bind=map_gpu:3,2,1,0 wrap_rrdesi --input={coaddfilelist} --output={redrockdir} --gpu
@@ -392,7 +392,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
     from matplotlib.image import imread
     import seaborn as sns
 
-    def _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title):
+    def _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, vi=True):
         fig, ax = plt.subplots(figsize=(10, 6))
         hmap = ax.imshow(grid, vmin=vminmax[0], vmax=vminmax[1], cmap=cmap)
 
@@ -413,7 +413,10 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
         ax.set_xticklabels(nice_targetclasses, rotation=45)
         ax.set_yticklabels(spectypes)
         ax.set_xlabel('Target Class')
-        ax.set_ylabel('RR SPECTYPE')
+        if vi:
+            ax.set_ylabel('VI SPECTYPE')
+        else:
+            ax.set_ylabel('RR SPECTYPE')
 
         for irow in range(nspectype):
             ax.axhline(y=irow+0.5, color='k')
@@ -437,7 +440,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
         log.info(f'Wrote {pngfile}')
 
 
-    def _buildgrids(zcat, ztrue):
+    def _buildgrids(zcat, ztrue, vi=True):
         grid_N = np.zeros((nspectype, ntargetclass), int)
         grid_purity = np.zeros((nspectype, ntargetclass), 'f4')
         grid_completeness = np.zeros((nspectype, ntargetclass), 'f4')
@@ -450,9 +453,15 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                 elif spectype == 'ALL' and targetclass != 'ALL':
                     I = np.where(zcat[targetclass])[0]
                 elif spectype != 'ALL' and targetclass == 'ALL':
-                    I = np.where(zcat['SPECTYPE'] == spectype)[0]
+                    if vi:
+                        I = np.where(zcat['VI_SPECTYPE'] == spectype)[0]
+                    else:
+                        I = np.where(zcat['SPECTYPE'] == spectype)[0]
                 else:
-                    I = np.where(zcat[targetclass] * (zcat['SPECTYPE'] == spectype))[0]
+                    if vi:
+                        I = np.where(zcat[targetclass] * (zcat['VI_SPECTYPE'] == spectype))[0]
+                    else:
+                        I = np.where(zcat[targetclass] * (zcat['SPECTYPE'] == spectype))[0]
         
                 N, fpure, fcomp, fout = getstats(zcat['Z_RR'][I], ztrue[I], zcat['ZWARN'][I])
                 grid_N[irow, icol] = N
@@ -490,6 +499,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
         os.makedirs(qadir, exist_ok=True)
 
     spectypes = ['STAR', 'GALAXY', 'QSO', 'ALL']
+    vi_spectypes = ['STAR', 'GALAXY', 'QSO', 'ALL']
     targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'QSO', 'ALL']
     #targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'ELG_LOP', 'QSO', 'ALL']
     #targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'BGS_ANY', 'LRG', 'ELG', 'ELG_LOP', 'ELG_HIP', 'ELG_VLO', 'QSO']
@@ -499,8 +509,8 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
     ntargetclass = len(targetclasses)
 
     vminmaxes = {
-        'iron-cumulative-vi-all':  {'purity': [90., 100.], 'completeness': [90., 100.], 'outliers': [0., 5.]},
-        'iron-cumulative-vi-main': {'purity': [90., 100.], 'completeness': [90., 100.], 'outliers': [0., 5.]},
+        'iron-cumulative-vi-all':  {'purity': [90., 100.], 'completeness': [90., 100.], 'outliers': [0., 10.]},
+        'iron-cumulative-vi-main': {'purity': [90., 100.], 'completeness': [90., 100.], 'outliers': [0., 10.]},
         'iron-pernight-vi-all':    {'purity': [80., 100.], 'completeness': [80., 100.], 'outliers': [0., 10.]},
         'iron-pernight-vi-main':   {'purity': [80., 100.], 'completeness': [80., 100.], 'outliers': [0., 10.]},
         'iron-main-subset':        {'purity': [80., 100.], 'completeness': [80., 100.], 'outliers': [0., 10.]},
@@ -529,7 +539,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
 
             if 'VI_Z' in zcat.columns:
                 refprefix = 'refvi'
-                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, zcat['VI_Z'])
+                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, zcat['VI_Z'], vi=True)
 
                 pngfiles = []
                 for grid, suffix, vminmax, cmap, cbarlabel, title in zip(
@@ -541,12 +551,12 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                         ['Sample\n', 'Purity\n', 'Completeness\n', 'Catastrophic Outliers\n']):
                     pngfile = os.path.join(qadir, f'qa-{refprefix}-{suffix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')
                     pngfiles.append(pngfile)
-                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title)
+                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, vi=True)
                 _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior)
 
                 # compare vs iron
                 refprefix = 'refiron'
-                refgrid_N, refgrid_purity, refgrid_completeness, refgrid_outliers = _buildgrids(refzcat, refzcat['VI_Z'])
+                refgrid_N, refgrid_purity, refgrid_completeness, refgrid_outliers = _buildgrids(refzcat, refzcat['VI_Z'], vi=True)
 
                 deltagrid_N = grid_N - refgrid_N
                 deltagrid_purity = grid_purity - refgrid_purity
@@ -563,12 +573,12 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                         [r'$\Delta$(Sample)'+'\n', r'$\Delta$(Purity)'+'\n', r'$\Delta$(Completeness)'+'\n', r'$\Delta$(Catastrophic Outliers)'+'\n']):
                     pngfile = os.path.join(qadir, f'qa-{refprefix}-{suffix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')
                     pngfiles.append(pngfile)
-                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title)
+                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, vi=True)
                 _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, refrrtemplates=refrrtemplates)
             else:
                 # compare vs iron
                 refprefix = 'refiron'
-                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z_RR'])
+                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z_RR'], vi=False)
 
                 pngfiles = []
                 for grid, suffix, vminmax, cmap, cbarlabel, title in zip(
@@ -580,7 +590,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                         ['Sample\n', 'Purity\n', 'Completeness\n', 'Catastrophic Outliers\n']):
                     pngfile = os.path.join(qadir, f'qa-{refprefix}-{suffix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')
                     pngfiles.append(pngfile)
-                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title)
+                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, vi=False)
                 _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior)
 
             
@@ -632,11 +642,11 @@ def main():
         
     # build QA for the given inputsample, templateset, and zscan prior
     if args.build_qa:
-        tmp_allinputsamples = ['iron-main-subset']
+        #tmp_allinputsamples = ['iron-main-subset']
         #tmp_allinputsamples = ['iron-cumulative-vi-main']
-        #tmp_allinputsamples = ['iron-cumulative-vi-all', 'iron-cumulative-vi-main',
-        #                       'iron-pernight-vi-all', 'iron-pernight-vi-main',
-        #                       'iron-main-subset']
+        tmp_allinputsamples = ['iron-cumulative-vi-all', 'iron-cumulative-vi-main',
+                               'iron-pernight-vi-all', 'iron-pernight-vi-main',
+                               'iron-main-subset']
         build_qa(tmp_allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron',
                  zscan_prior=args.zscan_prior)
 
