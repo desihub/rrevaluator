@@ -4,9 +4,9 @@
 
 * Gather the coadds.
 time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-cumulative-vi-all
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-cumulative-vi-main
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-cumulative-vi-main --mp 128
 time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-pernight-vi-all
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-pernight-vi-main
+time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-pernight-vi-main --mp 128
 time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-main-subset
 
 * Run Redrock (or copy from an existing specprod).
@@ -56,13 +56,12 @@ zscan_priors = {
     'zscan02': '-0.005,4.0,3e-4'
     }
 
-#projectdir = os.path.join(os.getenv('DESI_ROOT'), 'users', 'ioannis', 'Y3-templates')
-projectdir = os.path.expandvars(os.path.join(os.getenv('PSCRATCH'), 'Y3-templates'))
+from rrevaluator.io import projectdir
 if not os.path.isdir(projectdir):
     os.makedirs(projectdir, exist_ok=True)
     
 
-def read_inputsample(inputsample):
+def read_inputsample(inputsample, mp=1):
     """Read the given sample.
 
     """
@@ -74,30 +73,41 @@ def read_inputsample(inputsample):
     if not os.path.isdir(sampledir):
         os.makedirs(sampledir, exist_ok=True)
 
+    # survey=='sv-main' is a special case of objects targeted in SV but in
+    # read_vi we apply 'main' target selection; this distinction is used in
+    # gather_redrock(), below.
     if inputsample == 'iron-cumulative-vi-all':
+        survey = 'sv1'
         coadd_type = 'cumulative'
         sample = read_vi(samplefile=os.path.join(sampledir, 'sample-iron-vi-all.fits'))
     elif inputsample == 'iron-pernight-vi-all':
+        survey = 'sv1'
         coadd_type = 'pernight'
         sample = read_vi(samplefile=os.path.join(sampledir, 'sample-iron-vi-all.fits'))
     elif inputsample == 'iron-cumulative-vi-main':
+        survey = 'sv-main'
         coadd_type = 'cumulative'
-        sample = read_vi(main=True, samplefile=os.path.join(sampledir, 'sample-iron-vi-main.fits'))
+        sample = read_vi(main=True, mp=mp, samplefile=os.path.join(sampledir, 'sample-iron-vi-main.fits'))
     elif inputsample == 'iron-pernight-vi-main':
+        survey = 'sv-main'
         coadd_type = 'pernight'
-        sample = read_vi(main=True, samplefile=os.path.join(sampledir, 'sample-iron-vi-main.fits'))
+        sample = read_vi(main=True, mp=mp, samplefile=os.path.join(sampledir, 'sample-iron-vi-main.fits'))
     elif inputsample == 'iron-main-subset':
+        survey = 'main'
         coadd_type = 'cumulative'
         sample = read_iron_main_subset(samplefile=os.path.join(sampledir, 'sample-iron-main-subset.fits'))
     elif inputsample == 'iron-redqso':
+        survey = 'sv'
         coadd_type = 'cumulative'
     else:
-        raise ValueError(f'Input sample {inputsample} not recognized.')
+        errmsg = f'Input sample {inputsample} not recognized.'
+        log.critical(errmsg)
+        raise ValueError(errmsg)
 
-    return sample, specprod, coadd_type
+    return sample, specprod, coadd_type, survey
 
 
-def gather_coadds(inputsample, pernight=False, overwrite=False):
+def gather_coadds(inputsample, mp=1, pernight=False, overwrite=False):
     """Gather the coadded spectra for the given sample.
 
     """
@@ -107,7 +117,7 @@ def gather_coadds(inputsample, pernight=False, overwrite=False):
     if not os.path.isdir(outdir):
         os.makedirs(outdir, exist_ok=True)
 
-    sample, specprod, coadd_type = read_inputsample(inputsample)
+    sample, specprod, coadd_type, _ = read_inputsample(inputsample, mp=mp)
 
     for tileid in sorted(set(sample['TILEID'])):
         T = tileid == sample['TILEID']
@@ -252,7 +262,7 @@ def run_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01',
     """Run Redrock on the input sample.
 
     """
-    sample, specprod, coadd_type = read_inputsample(inputsample)
+    sample, specprod, coadd_type, _ = read_inputsample(inputsample)
 
     redrockrun = f'{rrtemplates}-{zscan_prior}'
 
@@ -325,9 +335,9 @@ def gather_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01', o
     and redshift scan.
 
     """
-    from desispec.validredshifts import validate
+    #from desispec.validredshifts import validate
 
-    sample, specprod, coadd_type = read_inputsample(inputsample)
+    sample, specprod, coadd_type, survey = read_inputsample(inputsample)
 
     redrockrun = f'{rrtemplates}-{zscan_prior}'
 
@@ -341,11 +351,58 @@ def gather_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01', o
             return
 
         redrockfiles = glob(os.path.join(redrockdir, 'redrock-*.fits'))
+
+        rrcols = ['TARGETID', 'Z', 'ZWARN', 'SPECTYPE', 'DELTACHI2']
+        fmcols = ['TARGETID', 'COADD_FIBERSTATUS']
+        if survey == 'sv-main':
+            from desitarget.targetmask import desi_mask, bgs_mask
+            desi_target_col, bgs_target_col = 'DESI_TARGET', 'BGS_TARGET'
+        else:
+            if survey == 'main':
+                from desitarget.targetmask import desi_mask, bgs_mask
+                desi_target_col, bgs_target_col = 'DESI_TARGET', 'BGS_TARGET'
+            elif survey == 'sv1':
+                from desitarget.sv1.sv1_targetmask import desi_mask, bgs_mask
+                desi_target_col, bgs_target_col = 'SV1_DESI_TARGET', 'SV1_BGS_TARGET'
+            else:
+                errmsg = f'Unrecognized survey {survey}; need to add another case!'
+                log.critical(errmsg)
+                raise ValueError(errmsg)
+            
+            fmcols += [desi_target_col, bgs_target_col]
+        
         zcats = []
         for redrockfile in redrockfiles:
-            zcat = validate(redrockfile, return_target_columns=True,
-                            extra_columns=['TARGETID', 'Z', 'Z_RR', 'ZWARN', 'COADD_FIBERSTATUS', 'SPECTYPE', 'DELTACHI2'])
+            rr = Table(fitsio.read(redrockfile, 'REDSHIFTS', columns=rrcols))
+            fm = Table(fitsio.read(redrockfile, 'FIBERMAP', columns=fmcols))
+            zcat = join(rr, fm)
+
+            # add the appropriate targeting bits
+            if survey == 'sv-main':
+                zcat = join(zcat, sample['TARGETID', 'DESI_TARGET', 'BGS_TARGET'])
+
+            if 'main' in survey:
+                for targ in ['BGS_BRIGHT', 'BGS_FAINT', 'LRG']:
+                    if 'BGS' in targ:
+                        zcat[targ] = zcat[bgs_target_col] & bgs_mask[targ] > 0
+                    else:
+                        zcat[targ] = zcat[desi_target_col] & desi_mask[targ] > 0
+
+                #ELG_LOP (not QSO), QSO (not ELG), QSO & ELG, ELG_VLO (not QSO)
+                zcat['QSO_ELG'] = (zcat[desi_target_col] & desi_mask['QSO'] != 0) & (zcat[desi_target_col] & desi_mask['ELG'] != 0)
+                zcat['QSO_notELG'] = (zcat[desi_target_col] & desi_mask['QSO'] != 0) & (zcat[desi_target_col] & desi_mask['ELG'] == 0)
+                zcat['ELG_LOP_notQSO'] = (zcat[desi_target_col] & desi_mask['ELG_LOP'] != 0) & (zcat[desi_target_col] & desi_mask['QSO'] == 0)
+                zcat['ELG_VLO_notQSO'] = (zcat[desi_target_col] & desi_mask['ELG_VLO'] != 0) & (zcat[desi_target_col] & desi_mask['QSO'] == 0)
+            else:
+                for targ in ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'QSO']:
+                    if 'BGS' in targ:
+                        zcat[f'{survey.upper()}_{targ}'] = zcat[bgs_target_col] & bgs_mask[targ] > 0
+                    else:
+                        zcat[f'{survey.upper()}_{targ}'] = zcat[desi_target_col] & desi_mask[targ] > 0
+                    
+            #zcat = validate(redrockfile, return_target_columns=False, extra_columns=cols)
             log.info(f'Validated {len(zcat)} targets from {redrockfile}')
+
             zcats.append(zcat)
         zcat = vstack(zcats)
 
@@ -354,6 +411,8 @@ def gather_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01', o
         zcat.meta['EXTNAME'] = 'ZCAT'
         zcat.write(out_zcatfile, overwrite=True)
         log.info(f'Wrote {len(zcat):,d} objects to {out_zcatfile}')
+    else:
+        log.info(f'Skipping existing file {out_zcatfile}; overwrite with --overwrite')
 
 
 def getstats(z, ztrue, zwarn, vcut=1e3):
@@ -609,7 +668,8 @@ def main():
     parser.add_argument('--inputsample', choices=allinputsamples, type=str, help='Input sample to analyze.')
     parser.add_argument('--rrtemplates', choices=allrrtemplates, type=str, help='Redrock templates.')
     parser.add_argument('--zscan-prior', default='zscan01', type=str, help='Galaxy redshift scan prior.')
-
+    parser.add_argument('--mp', type=int, default=1, help='number of multiprocessing cores')
+    
     parser.add_argument('--gather-coadds', action='store_true', help='Gather the coadded spectra.')
     parser.add_argument('--run-redrock', action='store_true', help='Gather the coadded spectra.')
     parser.add_argument('--gather-redrock', action='store_true', help='Gather the Redrock fitting results.')
@@ -620,7 +680,7 @@ def main():
 
     # gather the coadds
     if args.gather_coadds:
-        gather_coadds(inputsample=args.inputsample, overwrite=args.overwrite)
+        gather_coadds(inputsample=args.inputsample, mp=args.mp, overwrite=args.overwrite)
         
     # run Redrock
     if args.run_redrock:
