@@ -107,51 +107,19 @@ def read_inputsample(inputsample, mp=1):
     return sample, specprod, coadd_type, survey
 
 
-def gather_coadds(inputsample, mp=1, pernight=False, overwrite=False):
+def gather_coadds(inputsample, mp=1, overwrite=False):
     """Gather the coadded spectra for the given sample.
 
     """
-    from desispec.io import read_spectra, write_spectra
+    from rrevaluator.io import gather_sample_coadds
+
+    sample, specprod, coadd_type, _ = read_inputsample(inputsample, mp=mp)
 
     outdir = os.path.join(projectdir, 'coadds', inputsample)
     if not os.path.isdir(outdir):
         os.makedirs(outdir, exist_ok=True)
 
-    sample, specprod, coadd_type, _ = read_inputsample(inputsample, mp=mp)
-
-    for tileid in sorted(set(sample['TILEID'])):
-        T = tileid == sample['TILEID']
-        petals = sample['FIBER'][T] // 500
-        for petal in sorted(set(petals)):
-            P = petal == petals
-            targetids = sample[T][P]['TARGETID'].data
-
-            origdir = os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, 'tiles', coadd_type, str(tileid))
-            if coadd_type == 'cumulative':
-                coaddfile = os.path.join(outdir, f'coadd-{petal}-{tileid}.fits')
-                if not os.path.isfile(coaddfile) or overwrite:
-                    orig_coaddfile = glob(os.path.join(origdir, '*', f'coadd-{petal}-{tileid}-thru*.fits'))[0]
-                    spec = read_spectra(orig_coaddfile, targetids=targetids)
-                    assert(np.all(spec.target_ids() == targetids))
-                    log.info(f'Writing {len(targetids)} targets to {coaddfile}')
-                    write_spectra(coaddfile, spec)
-                else:
-                    log.info(f'Skipping existing file {coaddfile}')
-            elif coadd_type == 'pernight':
-                nightdirs = glob(os.path.join(origdir, '????????'))
-                for nightdir in nightdirs:
-                    night = os.path.basename(nightdir)
-                    coaddfile = os.path.join(outdir, f'coadd-{petal}-{tileid}-{night}.fits')
-                    if not os.path.isfile(coaddfile) or overwrite:
-                        orig_coaddfile = os.path.join(nightdir, f'coadd-{petal}-{tileid}-{night}.fits')
-                        # not all pernight petals exist
-                        if os.path.isfile(orig_coaddfile):
-                            spec = read_spectra(orig_coaddfile, targetids=targetids)
-                            assert(np.all(spec.target_ids() == targetids))
-                            log.info(f'Writing {len(targetids)} targets to {coaddfile}')
-                            write_spectra(coaddfile, spec)
-                    else:
-                        log.info(f'Skipping existing file {coaddfile}')
+    gather_sample_coadds(sample, specprod, coadd_type, outdir=outdir, overwrite=overwrite)
 
 
 def _copy_from_specprod(sample, specprod, coadd_type, outdir, overwrite):
@@ -437,7 +405,7 @@ def getstats(z, ztrue, zwarn, vcut=1e3):
     
     fpurity = np.sum(goodz * nozwarn) / Nnozwarn
     fcomplete = np.sum(goodz * nozwarn) / Ntotal
-    foutliers = np.sum(badz * nozwarn) / Ntotal
+    foutliers = np.sum(badz * nozwarn) / Nnozwarn
 
     return Ntotal, fpurity, fcomplete, foutliers
 
@@ -451,7 +419,13 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
     from matplotlib.image import imread
     import seaborn as sns
 
-    def _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, vi=True):
+    purity = 'N(zgood & zwarn=0) / N(zwarn=0)'
+    complete = 'N(zgood & zwarn=0) / N(targets)'
+    outlier = 'N(zbad & zwarn=0) / N(zwarn=0)'
+
+    def _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, nice_targetclasses, vi=True, verbose=True):
+        ntargetclass = len(nice_targetclasses)
+
         fig, ax = plt.subplots(figsize=(10, 6))
         hmap = ax.imshow(grid, vmin=vminmax[0], vmax=vminmax[1], cmap=cmap)
 
@@ -469,7 +443,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
 
         ax.set_xticks(np.arange(ntargetclass))
         ax.set_yticks(np.arange(nspectype))
-        ax.set_xticklabels(nice_targetclasses, rotation=45)
+        ax.set_xticklabels(nice_targetclasses, rotation=-45)
         ax.set_yticklabels(spectypes)
         ax.set_xlabel('Target Class')
         if vi:
@@ -496,10 +470,12 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
         #fig.tight_layout()
         fig.savefig(pngfile, bbox_inches='tight', pad_inches=0.25)
         plt.close()
-        log.info(f'Wrote {pngfile}')
+        if verbose:
+            log.info(f'Wrote {pngfile}')
 
 
-    def _buildgrids(zcat, ztrue, vi=True):
+    def _buildgrids(zcat, ztrue, targetclasses, vi=True):
+        ntargetclass = len(targetclasses)
         grid_N = np.zeros((nspectype, ntargetclass), int)
         grid_purity = np.zeros((nspectype, ntargetclass), 'f4')
         grid_completeness = np.zeros((nspectype, ntargetclass), 'f4')
@@ -507,11 +483,11 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
 
         for irow, spectype in enumerate(spectypes):
             for icol, targetclass in enumerate(targetclasses):
-                if spectype == 'ALL' and targetclass == 'ALL':
+                if spectype == 'ANY' and targetclass == 'ALL':
                     I = np.arange(len(zcat))
-                elif spectype == 'ALL' and targetclass != 'ALL':
+                elif spectype == 'ANY' and targetclass != 'ALL':
                     I = np.where(zcat[targetclass])[0]
-                elif spectype != 'ALL' and targetclass == 'ALL':
+                elif spectype != 'ANY' and targetclass == 'ALL':
                     if vi:
                         I = np.where(zcat['VI_SPECTYPE'] == spectype)[0]
                     else:
@@ -522,7 +498,8 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                     else:
                         I = np.where(zcat[targetclass] * (zcat['SPECTYPE'] == spectype))[0]
         
-                N, fpure, fcomp, fout = getstats(zcat['Z_RR'][I], ztrue[I], zcat['ZWARN'][I])
+                N, fpure, fcomp, fout = getstats(zcat['Z'][I], ztrue[I], zcat['ZWARN'][I])
+                #N, fpure, fcomp, fout = getstats(zcat['Z_RR'][I], ztrue[I], zcat['ZWARN'][I])
                 grid_N[irow, icol] = N
                 grid_purity[irow, icol] = 100 * fpure
                 grid_completeness[irow, icol] = 100 * fcomp
@@ -531,10 +508,10 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
         return grid_N, grid_purity, grid_completeness, grid_outliers
 
 
-    def _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, refrrtemplates=None):
+    def _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=(16, 12), refrrtemplates=None):
         pngfile = os.path.join(qadir, f'qa-{refprefix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')            
         imgs = [imread(pngfile) for pngfile in pngfiles]
-        fig, ax = plt.subplots(2, 2, figsize=(16, 12))
+        fig, ax = plt.subplots(2, 2, figsize=figsize)
         for xx, img in zip(ax.flat, imgs):
             xx.imshow(img)
             xx.axis('off')
@@ -543,6 +520,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
         else:
             fig.text(0.5, 0.96, f'{inputsample}::{rrtemplates}', va='center', ha='center', fontsize=18)
         fig.tight_layout()
+        fig.subplots_adjust(top=0.95)
         fig.savefig(pngfile)
         plt.close()
         log.info(f'Wrote {pngfile}')
@@ -557,15 +535,14 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
     if not os.path.isdir(qadir):
         os.makedirs(qadir, exist_ok=True)
 
-    spectypes = ['STAR', 'GALAXY', 'QSO', 'ALL']
+    spectypes = ['STAR', 'GALAXY', 'QSO', 'ANY']
     vi_spectypes = ['STAR', 'GALAXY', 'QSO', 'ALL']
-    targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'QSO', 'ALL']
+    #targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'QSO', 'ALL']
     #targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'ELG_LOP', 'QSO', 'ALL']
     #targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'BGS_ANY', 'LRG', 'ELG', 'ELG_LOP', 'ELG_HIP', 'ELG_VLO', 'QSO']
-    nice_targetclasses = [targetclass.replace('_', ' ') for targetclass in targetclasses]
+    #nice_targetclasses = [targetclass.replace('_', ' ') for targetclass in targetclasses]
 
     nspectype = len(spectypes)
-    ntargetclass = len(targetclasses)
 
     vminmaxes = {
         'iron-cumulative-vi-all':  {'purity': [90., 100.], 'completeness': [90., 100.], 'outliers': [0., 10.]},
@@ -596,9 +573,21 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
             log.info(f'Read {len(zcat):,d} objects from {zcatfile}')
             assert(np.all(zcat['TARGETID'] == refzcat['TARGETID']))
 
+            if 'ELG_VLO_notQSO' in zcat.columns:
+                targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'QSO_ELG', 'QSO_notELG', 'ELG_LOP_notQSO', 'ELG_VLO_notQSO', 'ALL']
+                onefig_figsize = (16, 10)
+            elif 'SV1_LRG' in zcat.columns:
+                targetclasses = ['SV1_BGS_BRIGHT', 'SV1_BGS_FAINT', 'SV1_LRG', 'SV1_ELG', 'SV1_QSO', 'ALL']
+                onefig_figsize = (16, 12)
+            else:
+                targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'QSO', 'ALL']
+                onefig_figsize = (16, 12)
+                
+            nice_targetclasses = [targetclass.replace('_', '-').replace('-not', ' & not ').replace('QSO-ELG', 'QSO & ELG') for targetclass in targetclasses]
+
             if 'VI_Z' in zcat.columns:
                 refprefix = 'refvi'
-                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, zcat['VI_Z'], vi=True)
+                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, zcat['VI_Z'], targetclasses, vi=True)
 
                 pngfiles = []
                 for grid, suffix, vminmax, cmap, cbarlabel, title in zip(
@@ -607,15 +596,16 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                         [[0, 1.2*np.max(grid_N)], vv['purity'], vv['completeness'], vv['outliers']],
                         ['Greens', 'coolwarm_r', 'coolwarm_r', 'coolwarm'],
                         [r'Number of Targets', 'Percent', 'Percent', 'Percent'],
-                        ['Sample\n', 'Purity\n', 'Completeness\n', 'Catastrophic Outliers\n']):
+                        ['Sample\n', f'Purity: {purity}\n', f'Completeness: {complete}\n', f'Catastrophic Outliers: {outlier}\n']):
                     pngfile = os.path.join(qadir, f'qa-{refprefix}-{suffix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')
                     pngfiles.append(pngfile)
-                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, vi=True)
-                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior)
+                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, nice_targetclasses, vi=True, verbose=False)
+                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=onefig_figsize)
+                [os.remove(pngfile) for pngfile in pngfiles]
 
                 # compare vs iron
                 refprefix = 'refiron'
-                refgrid_N, refgrid_purity, refgrid_completeness, refgrid_outliers = _buildgrids(refzcat, refzcat['VI_Z'], vi=True)
+                refgrid_N, refgrid_purity, refgrid_completeness, refgrid_outliers = _buildgrids(refzcat, refzcat['VI_Z'], targetclasses, vi=True)
 
                 deltagrid_N = grid_N - refgrid_N
                 deltagrid_purity = grid_purity - refgrid_purity
@@ -632,12 +622,14 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                         [r'$\Delta$(Sample)'+'\n', r'$\Delta$(Purity)'+'\n', r'$\Delta$(Completeness)'+'\n', r'$\Delta$(Catastrophic Outliers)'+'\n']):
                     pngfile = os.path.join(qadir, f'qa-{refprefix}-{suffix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')
                     pngfiles.append(pngfile)
-                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, vi=True)
-                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, refrrtemplates=refrrtemplates)
+                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, nice_targetclasses, vi=True, verbose=False)
+                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=onefig_figsize, refrrtemplates=refrrtemplates)
+                [os.remove(pngfile) for pngfile in pngfiles]
             else:
                 # compare vs iron
                 refprefix = 'refiron'
-                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z_RR'], vi=False)
+                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z'], vi=False)
+                #grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z_RR'], vi=False)
 
                 pngfiles = []
                 for grid, suffix, vminmax, cmap, cbarlabel, title in zip(
@@ -649,8 +641,9 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                         ['Sample\n', 'Purity\n', 'Completeness\n', 'Catastrophic Outliers\n']):
                     pngfile = os.path.join(qadir, f'qa-{refprefix}-{suffix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')
                     pngfiles.append(pngfile)
-                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, vi=False)
-                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior)
+                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, vi=False, verbose=False)
+                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=onefig_figsize)
+                [os.remove(pngfile) for pngfile in pngfiles]
 
             
 def main():

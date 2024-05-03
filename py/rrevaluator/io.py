@@ -223,3 +223,59 @@ def read_iron_main_subset(samplefile=None, veto_fibers=True):
         sample = sample[~I]
 
     return sample
+
+
+def gather_sample_coadds(sample, specprod, coadd_type='cumulative',
+                         outdir='.', overwrite=False):
+    """Gather coadded spectra given an input sample, specprod, and coadd_type.
+
+    Args:
+      sample (astropy.table.Table): table containing `TILEID`, `FIBER`, and
+        `TARGETID` (all other columns will be ignored).
+      specprod (str): spectroscopic production (e.g., 'iron')
+      coadd_type (str): type of coadded spectra to read. Currently only
+        'cumulative' and 'pernight' are supported.
+      outdir (str): output directory to write to
+      overwrite (bool): overwrite existing files
+
+    Returns:
+      Files with only the targets of interest are written out.
+
+    """
+    from desispec.io import read_spectra, write_spectra
+
+    sample, specprod, coadd_type, _ = read_inputsample(inputsample, mp=mp)
+
+    for tileid in sorted(set(sample['TILEID'])):
+        T = tileid == sample['TILEID']
+        petals = sample['FIBER'][T] // 500
+        for petal in sorted(set(petals)):
+            P = petal == petals
+            targetids = sample[T][P]['TARGETID'].data
+
+            origdir = os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, 'tiles', coadd_type, str(tileid))
+            if coadd_type == 'cumulative':
+                coaddfile = os.path.join(outdir, f'coadd-{petal}-{tileid}.fits')
+                if not os.path.isfile(coaddfile) or overwrite:
+                    orig_coaddfile = glob(os.path.join(origdir, '*', f'coadd-{petal}-{tileid}-thru*.fits'))[0]
+                    spec = read_spectra(orig_coaddfile, targetids=targetids)
+                    assert(np.all(spec.target_ids() == targetids))
+                    log.info(f'Writing {len(targetids)} targets to {coaddfile}')
+                    write_spectra(coaddfile, spec)
+                else:
+                    log.info(f'Skipping existing file {coaddfile}')
+            elif coadd_type == 'pernight':
+                nightdirs = glob(os.path.join(origdir, '????????'))
+                for nightdir in nightdirs:
+                    night = os.path.basename(nightdir)
+                    coaddfile = os.path.join(outdir, f'coadd-{petal}-{tileid}-{night}.fits')
+                    if not os.path.isfile(coaddfile) or overwrite:
+                        orig_coaddfile = os.path.join(nightdir, f'coadd-{petal}-{tileid}-{night}.fits')
+                        # not all pernight petals exist
+                        if os.path.isfile(orig_coaddfile):
+                            spec = read_spectra(orig_coaddfile, targetids=targetids)
+                            assert(np.all(spec.target_ids() == targetids))
+                            log.info(f'Writing {len(targetids)} targets to {coaddfile}')
+                            write_spectra(coaddfile, spec)
+                    else:
+                        log.info(f'Skipping existing file {coaddfile}')
