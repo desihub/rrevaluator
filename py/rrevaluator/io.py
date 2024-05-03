@@ -10,6 +10,7 @@ import fitsio
 import numpy as np
 from glob import glob
 from astropy.table import Table, vstack, join
+from desitarget import geomask
 
 from desiutil.log import get_logger
 log = get_logger()
@@ -225,7 +226,7 @@ def read_iron_main_subset(samplefile=None, veto_fibers=True):
     return sample
 
 
-def gather_sample_coadds(sample, specprod, coadd_type='cumulative',
+def gather_sample_coadds(sample, specprod='iron', coadd_type='cumulative',
                          outdir='.', overwrite=False):
     """Gather coadded spectra given an input sample, specprod, and coadd_type.
 
@@ -235,8 +236,8 @@ def gather_sample_coadds(sample, specprod, coadd_type='cumulative',
       specprod (str): spectroscopic production (e.g., 'iron')
       coadd_type (str): type of coadded spectra to read. Currently only
         'cumulative' and 'pernight' are supported.
-      outdir (str): output directory to write to
-      overwrite (bool): overwrite existing files
+      outdir (str): output directory to write to.
+      overwrite (bool): overwrite existing files.
 
     Returns:
       Files with only the targets of interest are written out.
@@ -279,3 +280,121 @@ def gather_sample_coadds(sample, specprod, coadd_type='cumulative',
                             write_spectra(coaddfile, spec)
                     else:
                         log.info(f'Skipping existing file {coaddfile}')
+
+
+def copy_redrock_from_specprod(sample, specprod='iron', coadd_type='cumulative',
+                               outdir='.', afterburners=True, overwrite=False):
+    """Copy existing Redrock+afterburner files from an existing specprod.
+
+    Args:
+      sample (astropy.table.Table): table containing `TILEID`, `FIBER`, and
+        `TARGETID` (all other columns will be ignored).
+      specprod (str): spectroscopic production (e.g., 'iron')
+      coadd_type (str): type of coadded spectra to read. Currently only
+        'cumulative' and 'pernight' are supported.
+      outdir (str): output directory to write to.
+      afterburners (bool): also copy after-burner files.
+      overwrite (bool): overwrite existing files.
+
+    Returns:
+      Files with only the targets of interest are written out.
+
+    """
+    from redrock.results import read_zscan, write_zscan
+    
+    for tileid in sorted(set(sample['TILEID'])):
+        T = tileid == sample['TILEID']
+        petals = sample['FIBER'][T] // 500
+        for petal in sorted(set(petals)):
+            P = petal == petals
+            targetids = sample[T][P]['TARGETID'].data
+
+            origdir = os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, 'tiles', coadd_type, str(tileid))
+            if coadd_type == 'cumulative':
+                redrockfile = os.path.join(outdir, f'redrock-{petal}-{tileid}.fits')
+                rrdetailsfile = os.path.join(outdir, f'rrdetails-{petal}-{tileid}.h5')
+                if not os.path.isfile(redrockfile) or overwrite:
+                    orig_redrockfile = glob(os.path.join(origdir, '*', f'redrock-{petal}-{tileid}-thru*.fits'))[0]
+                    origdir = os.path.dirname(orig_redrockfile)
+                    thrunight = os.path.basename(origdir)
+                    orig_rrdetailsfile = os.path.join(origdir, f'rrdetails-{petal}-{tileid}-thru{thrunight}.h5')
+    
+                    alltargetids = fitsio.read(orig_redrockfile, ext='REDSHIFTS', columns='TARGETID')
+                    rows = np.where(np.isin(alltargetids, targetids))[0]
+    
+                    zbest = fitsio.read(orig_redrockfile, ext='REDSHIFTS', rows=rows)
+                    fm = fitsio.read(orig_redrockfile, ext='FIBERMAP', rows=rows)
+    
+                    I = geomask.match_to(zbest['TARGETID'], targetids)
+                    zbest = zbest[I]
+                    fm = fm[I]
+                    assert(np.all(zbest['TARGETID'] == targetids))
+                    assert(np.all(fm['TARGETID'] == targetids))
+        
+                    log.info(f'Writing {redrockfile}')
+                    fitsio.write(redrockfile, zbest, extname='REDSHIFTS', clobber=True)
+                    fitsio.write(redrockfile, fm, extname='FIBERMAP')
+    
+                    zscan, zfit = read_zscan(orig_rrdetailsfile, select_targetids=targetids)
+                    assert(len(np.unique(zfit['targetid']) == len(targetids)))
+                    log.info(f'Writing {rrdetailsfile}')
+                    write_zscan(rrdetailsfile, zscan, zfit, clobber=True)
+    
+                    for afterprefix, extname in zip(['qso_qn', 'qso_mgii', 'emline'], ['QN_RR', 'MGII', 'EMLINEFIT']):
+                        orig_afterfile = os.path.join(origdir, f'{afterprefix}-{petal}-{tileid}-thru{thrunight}.fits')
+                        afterfile = os.path.join(outdir, f'{afterprefix}-{petal}-{tileid}.fits')
+    
+                        after = fitsio.read(orig_afterfile, rows=rows, ext=extname)
+                        after = after[I]
+                        assert(np.all(after['TARGETID'] == targetids))
+    
+                        log.info(f'Writing {afterfile}')
+                        fitsio.write(afterfile, after, extname=extname, clobber=True)
+                else:
+                    log.info(f'Skipping existing file {redrockfile}')
+            elif coadd_type == 'pernight':
+                nightdirs = glob(os.path.join(origdir, '????????'))
+                for nightdir in nightdirs:
+                    night = os.path.basename(nightdir)
+                    redrockfile = os.path.join(outdir, f'redrock-{petal}-{tileid}-{night}.fits')
+                    rrdetailsfile = os.path.join(outdir, f'rrdetails-{petal}-{tileid}-{night}.h5')
+                    if not os.path.isfile(redrockfile) or overwrite:
+                        orig_redrockfile = os.path.join(nightdir, f'redrock-{petal}-{tileid}-{night}.fits')
+                        orig_rrdetailsfile = os.path.join(nightdir, f'rrdetails-{petal}-{tileid}-{night}.h5')
+                        # not all pernight petals exist
+                        if os.path.isfile(orig_redrockfile):
+                            alltargetids = fitsio.read(orig_redrockfile, ext='REDSHIFTS', columns='TARGETID')
+                            rows = np.where(np.isin(alltargetids, targetids))[0]
+            
+                            zbest = fitsio.read(orig_redrockfile, ext='REDSHIFTS', rows=rows)
+                            fm = fitsio.read(orig_redrockfile, ext='FIBERMAP', rows=rows)
+            
+                            I = geomask.match_to(zbest['TARGETID'], targetids)
+                            zbest = zbest[I]
+                            fm = fm[I]
+                            assert(np.all(zbest['TARGETID'] == targetids))
+                            assert(np.all(fm['TARGETID'] == targetids))
+                
+                            log.info(f'Writing {redrockfile}')
+                            fitsio.write(redrockfile, zbest, extname='REDSHIFTS', clobber=True)
+                            fitsio.write(redrockfile, fm, extname='FIBERMAP')
+            
+                            zscan, zfit = read_zscan(orig_rrdetailsfile, select_targetids=targetids)
+                            assert(np.all(np.unique(zfit['targetid']) == targetids))
+                            log.info(f'Writing {rrdetailsfile}')
+                            write_zscan(rrdetailsfile, zscan, zfit, clobber=True)
+            
+                            for afterprefix, extname in zip(['qso_qn', 'qso_mgii', 'emline'], ['QN_RR', 'MGII', 'EMLINEFIT']):
+                                orig_afterfile = os.path.join(nightdir, f'{afterprefix}-{petal}-{tileid}-{night}.fits')
+                                afterfile = os.path.join(outdir, f'{afterprefix}-{petal}-{tileid}-{night}.fits')
+            
+                                after = fitsio.read(orig_afterfile, rows=rows, ext=extname)
+                                after = after[I]
+                                assert(np.all(after['TARGETID'] == targetids))
+            
+                                log.info(f'Writing {afterfile}')
+                                fitsio.write(afterfile, after, extname=extname, clobber=True)
+                    else:
+                        log.info(f'Skipping existing file {redrockfile}')
+                        
+

@@ -45,8 +45,6 @@ import fitsio
 from glob import glob
 from astropy.table import Table, vstack, join
 
-from desitarget import geomask
-
 from desiutil.log import get_logger
 log = get_logger()
 
@@ -122,114 +120,16 @@ def gather_coadds(inputsample, mp=1, overwrite=False):
     gather_sample_coadds(sample, specprod, coadd_type, outdir=outdir, overwrite=overwrite)
 
 
-def _copy_from_specprod(sample, specprod, coadd_type, outdir, overwrite):
-    """Copy existing Redrock+afterburner files from an existing specprod.
-
-    """
-    from redrock.results import read_zscan, write_zscan
-    
-    for tileid in sorted(set(sample['TILEID'])):
-        T = tileid == sample['TILEID']
-        petals = sample['FIBER'][T] // 500
-        for petal in sorted(set(petals)):
-            P = petal == petals
-            targetids = sample[T][P]['TARGETID'].data
-
-            origdir = os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, 'tiles', coadd_type, str(tileid))
-            if coadd_type == 'cumulative':
-                redrockfile = os.path.join(outdir, f'redrock-{petal}-{tileid}.fits')
-                rrdetailsfile = os.path.join(outdir, f'rrdetails-{petal}-{tileid}.h5')
-                if not os.path.isfile(redrockfile) or overwrite:
-                    orig_redrockfile = glob(os.path.join(origdir, '*', f'redrock-{petal}-{tileid}-thru*.fits'))[0]
-                    origdir = os.path.dirname(orig_redrockfile)
-                    thrunight = os.path.basename(origdir)
-                    orig_rrdetailsfile = os.path.join(origdir, f'rrdetails-{petal}-{tileid}-thru{thrunight}.h5')
-    
-                    alltargetids = fitsio.read(orig_redrockfile, ext='REDSHIFTS', columns='TARGETID')
-                    rows = np.where(np.isin(alltargetids, targetids))[0]
-    
-                    zbest = fitsio.read(orig_redrockfile, ext='REDSHIFTS', rows=rows)
-                    fm = fitsio.read(orig_redrockfile, ext='FIBERMAP', rows=rows)
-    
-                    I = geomask.match_to(zbest['TARGETID'], targetids)
-                    zbest = zbest[I]
-                    fm = fm[I]
-                    assert(np.all(zbest['TARGETID'] == targetids))
-                    assert(np.all(fm['TARGETID'] == targetids))
-        
-                    log.info(f'Writing {redrockfile}')
-                    fitsio.write(redrockfile, zbest, extname='REDSHIFTS', clobber=True)
-                    fitsio.write(redrockfile, fm, extname='FIBERMAP')
-    
-                    zscan, zfit = read_zscan(orig_rrdetailsfile, select_targetids=targetids)
-                    assert(len(np.unique(zfit['targetid']) == len(targetids)))
-                    log.info(f'Writing {rrdetailsfile}')
-                    write_zscan(rrdetailsfile, zscan, zfit, clobber=True)
-    
-                    for afterprefix, extname in zip(['qso_qn', 'qso_mgii', 'emline'], ['QN_RR', 'MGII', 'EMLINEFIT']):
-                        orig_afterfile = os.path.join(origdir, f'{afterprefix}-{petal}-{tileid}-thru{thrunight}.fits')
-                        afterfile = os.path.join(outdir, f'{afterprefix}-{petal}-{tileid}.fits')
-    
-                        after = fitsio.read(orig_afterfile, rows=rows, ext=extname)
-                        after = after[I]
-                        assert(np.all(after['TARGETID'] == targetids))
-    
-                        log.info(f'Writing {afterfile}')
-                        fitsio.write(afterfile, after, extname=extname, clobber=True)
-                else:
-                    log.info(f'Skipping existing file {redrockfile}')
-            elif coadd_type == 'pernight':
-                nightdirs = glob(os.path.join(origdir, '????????'))
-                for nightdir in nightdirs:
-                    night = os.path.basename(nightdir)
-                    redrockfile = os.path.join(outdir, f'redrock-{petal}-{tileid}-{night}.fits')
-                    rrdetailsfile = os.path.join(outdir, f'rrdetails-{petal}-{tileid}-{night}.h5')
-                    if not os.path.isfile(redrockfile) or overwrite:
-                        orig_redrockfile = os.path.join(nightdir, f'redrock-{petal}-{tileid}-{night}.fits')
-                        orig_rrdetailsfile = os.path.join(nightdir, f'rrdetails-{petal}-{tileid}-{night}.h5')
-                        # not all pernight petals exist
-                        if os.path.isfile(orig_redrockfile):
-                            alltargetids = fitsio.read(orig_redrockfile, ext='REDSHIFTS', columns='TARGETID')
-                            rows = np.where(np.isin(alltargetids, targetids))[0]
-            
-                            zbest = fitsio.read(orig_redrockfile, ext='REDSHIFTS', rows=rows)
-                            fm = fitsio.read(orig_redrockfile, ext='FIBERMAP', rows=rows)
-            
-                            I = geomask.match_to(zbest['TARGETID'], targetids)
-                            zbest = zbest[I]
-                            fm = fm[I]
-                            assert(np.all(zbest['TARGETID'] == targetids))
-                            assert(np.all(fm['TARGETID'] == targetids))
-                
-                            log.info(f'Writing {redrockfile}')
-                            fitsio.write(redrockfile, zbest, extname='REDSHIFTS', clobber=True)
-                            fitsio.write(redrockfile, fm, extname='FIBERMAP')
-            
-                            zscan, zfit = read_zscan(orig_rrdetailsfile, select_targetids=targetids)
-                            assert(np.all(np.unique(zfit['targetid']) == targetids))
-                            log.info(f'Writing {rrdetailsfile}')
-                            write_zscan(rrdetailsfile, zscan, zfit, clobber=True)
-            
-                            for afterprefix, extname in zip(['qso_qn', 'qso_mgii', 'emline'], ['QN_RR', 'MGII', 'EMLINEFIT']):
-                                orig_afterfile = os.path.join(nightdir, f'{afterprefix}-{petal}-{tileid}-{night}.fits')
-                                afterfile = os.path.join(outdir, f'{afterprefix}-{petal}-{tileid}-{night}.fits')
-            
-                                after = fitsio.read(orig_afterfile, rows=rows, ext=extname)
-                                after = after[I]
-                                assert(np.all(after['TARGETID'] == targetids))
-            
-                                log.info(f'Writing {afterfile}')
-                                fitsio.write(afterfile, after, extname=extname, clobber=True)
-                    else:
-                        log.info(f'Skipping existing file {redrockfile}')
-                        
-
 def run_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01',
                 nodes=4, time='00:10:00', queue='debug', afterburners=True,
                 overwrite=False):
-    """Run Redrock on the input sample.
+    """Copy Redrock+afterburners from an existing specprod or generate the Slurm
+    script which can be used to run (outside of this script) Redrock on a given
+    input sample.
 
     """
+    from rrevaluator.io import copy_redrock_from_specprod
+
     sample, specprod, coadd_type, _ = read_inputsample(inputsample)
 
     redrockrun = f'{rrtemplates}-{zscan_prior}'
@@ -238,9 +138,10 @@ def run_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01',
     if not os.path.isdir(redrockdir):
         os.makedirs(redrockdir, exist_ok=True)
 
-    # old templates and redshift scan just copy over the relevant files
+    # Old templates and redshift scan: just copy over the relevant files.
     if rrtemplates == 'PCA-Iron' and zscan_prior == 'zscan01':
-        _copy_from_specprod(sample, specprod, coadd_type, redrockdir, overwrite)
+        copy_redrock_from_specprod(sample, specprod=specprod, coadd_type=coadd_type, outdir=redrockdir,
+                                   afterburners=afterburners, overwrite=overwrite)
     else:
         rrtemplatedir = os.path.join(projectdir, 'rrtemplates', rrtemplates)
         coaddfiles = glob(os.path.join(projectdir, 'coadds', inputsample, 'coadd-*.fits'))
@@ -383,33 +284,6 @@ def gather_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01', o
         log.info(f'Skipping existing file {out_zcatfile}; overwrite with --overwrite')
 
 
-def getstats(z, ztrue, zwarn, vcut=1e3):
-    """
-    * Purity = what fraction of redrock confident answers were actually correct?  i.e. #(goodz AND ZWARN=0)/#(ZWARN=0)
-    * Completeness = what fraction of all good VI entries had correct and confident redshifts? i.e. #(goodz AND ZWARN=0)/#(total)
-    * Catastrophic outliers = minimize number of wrong answers incorrectly flagged as good, i.e. #(badz AND ZWARN=0) / #(total)
-
-    """
-    Ntotal = len(z)
-    if Ntotal == 0:
-        return 0, np.nan, np.nan, np.nan
-
-    C_LIGHT = 299792.458 # [km/s]
-
-    dz = z - ztrue
-    goodz = (C_LIGHT * np.abs(dz) / (1. + ztrue)) < vcut
-    badz = np.logical_not(goodz)
-    nozwarn = zwarn == 0
-
-    Nnozwarn = np.sum(nozwarn)
-    
-    fpurity = np.sum(goodz * nozwarn) / Nnozwarn
-    fcomplete = np.sum(goodz * nozwarn) / Ntotal
-    foutliers = np.sum(badz * nozwarn) / Nnozwarn
-
-    return Ntotal, fpurity, fcomplete, foutliers
-
-
 def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_prior='zscan01'):
     """Build QA for all samples.
 
@@ -418,6 +292,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
     import matplotlib.ticker as mticker    
     from matplotlib.image import imread
     import seaborn as sns
+    from rrevaluator.util import getstats
 
     purity = 'N(zgood & zwarn=0) / N(zwarn=0)'
     complete = 'N(zgood & zwarn=0) / N(targets)'
