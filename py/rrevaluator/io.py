@@ -71,7 +71,7 @@ def read_vi(quality=2.5, mp=1, vi_spectype=None, samplefile=None, veto_fibers=Tr
     if main:
         if False:
             from desitarget.io import read_targets_in_tiles
-    
+
             log.info('Building main target list (this will take a little while).')
     
             tiles_edr = Table(fitsio.read('/global/cfs/cdirs/desi/public/edr/spectro/redux/fuji/tiles-fuji.fits'))
@@ -85,13 +85,29 @@ def read_vi(quality=2.5, mp=1, vi_spectype=None, samplefile=None, veto_fibers=Tr
             hpdirname = '/global/cfs/cdirs/desi/target/catalogs/dr9/1.1.1/targets/main/resolve/bright'
             main_bright = Table(read_targets_in_tiles(hpdirname, tiles=tiles_sv, quick=True))
             assert(np.unique(main_bright["TARGETID"]).size == len(main_bright))
-    
+
             in_dark = np.isin(allvi['TARGETID'], main_dark['TARGETID'])
             in_bright = np.isin(allvi['TARGETID'], main_bright['TARGETID'])
-            imain = in_dark | in_bright
+            imain = np.where(in_dark | in_bright)[0]
+            
+            nall = len(allvi)
 
-            log.info(f'Trimming to {np.sum(I):,d}/{len(allvi):,d} main-survey targets.')
-            allvi = allvi[imain]            
+            alltargets = vstack((join(allvi[imain], main_dark), join(allvi[imain], main_bright)))
+
+            # remove dark-bright duplicates
+            _, uindx = np.unique(alltargets['TARGETID'], return_index=True)
+            alltargets = alltargets[uindx]
+            
+            ilrg = alltargets['DESI_TARGET'] & desi_mask.LRG != 0
+            ielg = alltargets['DESI_TARGET'] & desi_mask.ELG != 0
+            iqso = alltargets['DESI_TARGET'] & desi_mask.QSO != 0
+            ibgs = alltargets['DESI_TARGET'] & desi_mask.BGS_ANY != 0
+            imain = np.where(np.logical_or.reduce((ilrg, ielg, iqso, ibgs)))[0]
+            targets = alltargets[imain]
+
+    
+            log.info(f'Trimming to {len(allvi):,d}/{nall:,d} main-survey targets.')
+            allvi = allvi[imain]
         else:
             import astropy.units as u
             from astropy.coordinates import SkyCoord
@@ -134,7 +150,10 @@ def read_vi(quality=2.5, mp=1, vi_spectype=None, samplefile=None, veto_fibers=Tr
                 tractor.write(tractorfile, overwrite=True)
                 log.info(f'Wrote {tractorfile}')
 
+            nall = len(allvi)
+            
             log.info(f'Running target selection on {len(tractor):,d} objects.')
+            # Note: https://github.com/desihub/desitarget/issues/821
             alltargets = Table(select_targets(tractorfile, backup=False, numproc=1))
 
             ilrg = alltargets['DESI_TARGET'] & desi_mask.LRG != 0
@@ -149,7 +168,6 @@ def read_vi(quality=2.5, mp=1, vi_spectype=None, samplefile=None, veto_fibers=Tr
             #c_allvi = SkyCoord(ra=allvi['TARGET_RA']*u.deg, dec=allvi['TARGET_DEC']*u.deg)
             #c_targets = SkyCoord(ra=targets['RA']*u.deg, dec=targets['DEC']*u.deg)
             #indx_allvi, indx_targets, d2d, _ = c_targets.search_around_sky(c_allvi, rad)
-            nall = len(allvi)
             allvi = join(allvi, targets)
 
             log.info(f'Trimming to {len(allvi):,d}/{nall:,d} main-survey targets.')
@@ -244,8 +262,6 @@ def gather_sample_coadds(sample, specprod='iron', coadd_type='cumulative',
 
     """
     from desispec.io import read_spectra, write_spectra
-
-    sample, specprod, coadd_type, _ = read_inputsample(inputsample, mp=mp)
 
     for tileid in sorted(set(sample['TILEID'])):
         T = tileid == sample['TILEID']
