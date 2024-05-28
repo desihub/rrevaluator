@@ -2,41 +2,32 @@
 
 """Evaluate the Y3 templates.
 
+samples=("iron-cumulative-vi-all" "iron-cumulative-vi-main" "iron-pernight-vi-all" "iron-pernight-vi-main" "iron-main-subset")
+templates=("PCA-Iron" "Y3-0.1" "Y3-0.2.0" "Y3-0.2.1")
+
 * Gather the coadds.
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-cumulative-vi-all
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-cumulative-vi-main --mp 128
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-pernight-vi-all
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-pernight-vi-main --mp 128
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-main-subset
+for sample in "${samples[@]}"; do
+  time Y3-templates --gather-coadds --inputsample=$sample --mp=16
+done
 
 * Run Redrock (or copy from an existing specprod).
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-cumulative-vi-all --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-cumulative-vi-main --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-pernight-vi-all --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-pernight-vi-main --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-main-subset --rrtemplates=PCA-Iron
-
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-cumulative-vi-all --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-cumulative-vi-main --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-pernight-vi-all --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-pernight-vi-main --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-main-subset --rrtemplates=Y3-0.1
+for sample in "${samples[@]}"; do
+  for template in "${templates[@]}"; do
+    time Y3-templates --run-redrock --inputsample=$sample --rrtemplates=$template
+  done
+done
 
 * Gather and validate Redrock fitting results
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-cumulative-vi-all --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-cumulative-vi-main --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-pernight-vi-all --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-pernight-vi-main --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-main-subset --rrtemplates=PCA-Iron
-
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-cumulative-vi-all --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-cumulative-vi-main --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-pernight-vi-all --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-pernight-vi-main --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-main-subset --rrtemplates=Y3-0.1
+for sample in "${samples[@]}"; do
+  for template in "${templates[@]}"; do
+    cmd="time Y3-templates --gather-redrock --inputsample=$sample --rrtemplates=$template"
+    echo $cmd
+    $cmd
+  done
+done
 
 * Build QA
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --build-qa
+time Y3-templates --qa-statgrids
 
 """
 import os, time, pdb
@@ -284,8 +275,8 @@ def gather_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01', o
         log.info(f'Skipping existing file {out_zcatfile}; overwrite with --overwrite')
 
 
-def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_prior='zscan01'):
-    """Build QA for all samples.
+def qa_statgrids(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_prior='zscan01'):
+    """Build statistics grids QA.
 
     """
     import matplotlib.pyplot as plt
@@ -436,7 +427,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
         vv = vminmaxes[inputsample]
         
         refzcat = Table(fitsio.read(refzcatfile))
-        log.info(f'Read {len(refzcat):,d} objects from {refzcatfile}')        
+        log.debug(f'Read {len(refzcat):,d} objects from {refzcatfile}')        
         
         for rrtemplates in np.atleast_1d(allrrtemplates):
             zcatfile = os.path.join(projectdir, f'zcat-{inputsample}-{rrtemplates}-{zscan_prior}.fits')
@@ -445,7 +436,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                 continue
             
             zcat = Table(fitsio.read(zcatfile))
-            log.info(f'Read {len(zcat):,d} objects from {zcatfile}')
+            log.debug(f'Read {len(zcat):,d} objects from {zcatfile}')
             assert(np.all(zcat['TARGETID'] == refzcat['TARGETID']))
 
             if 'ELG_VLO_notQSO' in zcat.columns:
@@ -478,11 +469,12 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                 _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=onefig_figsize)
                 [os.remove(pngfile) for pngfile in pngfiles]
 
-                # compare vs iron
-                refprefix = 'refiron'
+                # compare vs the reference grid (PCA-Iron)
+                refprefix = 'deltarefiron'
                 refgrid_N, refgrid_purity, refgrid_completeness, refgrid_outliers = _buildgrids(refzcat, refzcat['VI_Z'], targetclasses, vi=True)
-
-                deltagrid_N = grid_N - refgrid_N
+    
+                deltagrid_N = grid_N # full sample, not Delta(sample)
+                #deltagrid_N = grid_N - refgrid_N
                 deltagrid_purity = grid_purity - refgrid_purity
                 deltagrid_completeness = grid_completeness - refgrid_completeness
                 deltagrid_outliers = refgrid_outliers - grid_outliers
@@ -494,18 +486,17 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                         [[0, 1.2*np.max(deltagrid_N)], [-10., 10], [-10., 10], [-10., 10]],
                         ['Greens', 'coolwarm_r', 'coolwarm_r', 'coolwarm_r'],
                         [r'Number of Targets', 'Percent', 'Percent', 'Percent'],
-                        [r'$\Delta$(Sample)'+'\n', r'$\Delta$(Purity)'+'\n', r'$\Delta$(Completeness)'+'\n', r'$\Delta$(Catastrophic Outliers)'+'\n']):
+                        [r'Sample'+'\n', r'$\Delta$(Purity)'+'\n', r'$\Delta$(Completeness)'+'\n', r'$\Delta$(Catastrophic Outliers)'+'\n']):
                     pngfile = os.path.join(qadir, f'qa-{refprefix}-{suffix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')
                     pngfiles.append(pngfile)
                     _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, nice_targetclasses, vi=True, verbose=False)
                 _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=onefig_figsize, refrrtemplates=refrrtemplates)
                 [os.remove(pngfile) for pngfile in pngfiles]
             else:
-                # compare vs iron
                 refprefix = 'refiron'
-                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z'], vi=False)
-                #grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z_RR'], vi=False)
-
+                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z'], targetclasses, vi=False)
+                #grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z_RR'], targetclasses, vi=False)
+                
                 pngfiles = []
                 for grid, suffix, vminmax, cmap, cbarlabel, title in zip(
                         [grid_N, grid_purity, grid_completeness, grid_outliers],
@@ -516,11 +507,11 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                         ['Sample\n', 'Purity\n', 'Completeness\n', 'Catastrophic Outliers\n']):
                     pngfile = os.path.join(qadir, f'qa-{refprefix}-{suffix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')
                     pngfiles.append(pngfile)
-                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, vi=False, verbose=False)
+                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, nice_targetclasses, vi=False, verbose=False)
                 _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=onefig_figsize)
                 [os.remove(pngfile) for pngfile in pngfiles]
 
-            
+                
 def main():
     """Main wrapper."""
 
@@ -529,7 +520,7 @@ def main():
     allinputsamples = ['iron-cumulative-vi-all', 'iron-cumulative-vi-main',
                        'iron-pernight-vi-all', 'iron-pernight-vi-main',
                        'iron-main-subset', 'iron-redqso']
-    allrrtemplates = ['PCA-Iron', 'Y3-0.1']
+    allrrtemplates = ['PCA-Iron', 'Y3-0.1', 'Y3-0.2.0', 'Y3-0.2.1']
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
@@ -541,7 +532,7 @@ def main():
     parser.add_argument('--gather-coadds', action='store_true', help='Gather the coadded spectra.')
     parser.add_argument('--run-redrock', action='store_true', help='Gather the coadded spectra.')
     parser.add_argument('--gather-redrock', action='store_true', help='Gather the Redrock fitting results.')
-    parser.add_argument('--build-qa', action='store_true', help='Build QA.')
+    parser.add_argument('--qa-statgrids', action='store_true', help='Build the statistics grids QA.')
 
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing files.')
     args = parser.parse_args()
@@ -553,10 +544,10 @@ def main():
     # run Redrock
     if args.run_redrock:
         config = {
-            'iron-cumulative-vi-all':  {'time': '00:15:00', 'queue': 'debug',   'nodes': 2},
-            'iron-cumulative-vi-main': {'time': '00:10:00', 'queue': 'debug',   'nodes': 2},
-            'iron-pernight-vi-all':    {'time': '00:30:00', 'queue': 'debug',   'nodes': 4},
-            'iron-pernight-vi-main':   {'time': '00:30:00', 'queue': 'debug',   'nodes': 4},
+            'iron-cumulative-vi-all':  {'time': '00:30:00', 'queue': 'debug',   'nodes': 2},
+            'iron-cumulative-vi-main': {'time': '00:20:00', 'queue': 'debug',   'nodes': 2},
+            'iron-pernight-vi-all':    {'time': '01:00:00', 'queue': 'regular', 'nodes': 4},
+            'iron-pernight-vi-main':   {'time': '01:00:00', 'queue': 'regular', 'nodes': 4},
             'iron-main-subset':        {'time': '01:00:00', 'queue': 'regular', 'nodes': 8},
             }
         config = config[args.inputsample]
@@ -568,16 +559,16 @@ def main():
     if args.gather_redrock:
         gather_redrock(inputsample=args.inputsample, rrtemplates=args.rrtemplates, overwrite=args.overwrite)
         
-    # build QA for the given inputsample, templateset, and zscan prior
-    if args.build_qa:
-        #tmp_allinputsamples = ['iron-main-subset']
-        #tmp_allinputsamples = ['iron-cumulative-vi-main']
+    # build the statistics grids for the given inputsample, templateset, and zscan prior
+    if args.qa_statgrids:
         tmp_allinputsamples = ['iron-cumulative-vi-all', 'iron-cumulative-vi-main',
                                'iron-pernight-vi-all', 'iron-pernight-vi-main',
                                'iron-main-subset']
-        build_qa(tmp_allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron',
-                 zscan_prior=args.zscan_prior)
-
+        tmp_allinputsamples = ['iron-cumulative-vi-main']
+        #tmp_allinputsamples = ['iron-main-subset']
+        qa_statgrids(tmp_allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron',
+                     zscan_prior=args.zscan_prior)
+        
         
 if __name__ == '__main__':
     main()
