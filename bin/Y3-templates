@@ -2,41 +2,32 @@
 
 """Evaluate the Y3 templates.
 
+samples=("iron-cumulative-vi-all" "iron-cumulative-vi-main" "iron-pernight-vi-all" "iron-pernight-vi-main" "iron-main-subset")
+templates=("PCA-Iron" "Y3-0.1" "Y3-0.2.0" "Y3-0.2.1")
+
 * Gather the coadds.
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-cumulative-vi-all
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-cumulative-vi-main
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-pernight-vi-all
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-pernight-vi-main
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-coadds --inputsample=iron-main-subset
+for sample in "${samples[@]}"; do
+  time Y3-templates --gather-coadds --inputsample=$sample --mp=16
+done
 
 * Run Redrock (or copy from an existing specprod).
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-cumulative-vi-all --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-cumulative-vi-main --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-pernight-vi-all --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-pernight-vi-main --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-main-subset --rrtemplates=PCA-Iron
-
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-cumulative-vi-all --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-cumulative-vi-main --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-pernight-vi-all --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-pernight-vi-main --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --run-redrock --inputsample=iron-main-subset --rrtemplates=Y3-0.1
+for sample in "${samples[@]}"; do
+  for template in "${templates[@]}"; do
+    time Y3-templates --run-redrock --inputsample=$sample --rrtemplates=$template
+  done
+done
 
 * Gather and validate Redrock fitting results
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-cumulative-vi-all --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-cumulative-vi-main --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-pernight-vi-all --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-pernight-vi-main --rrtemplates=PCA-Iron
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-main-subset --rrtemplates=PCA-Iron
-
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-cumulative-vi-all --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-cumulative-vi-main --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-pernight-vi-all --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-pernight-vi-main --rrtemplates=Y3-0.1
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --gather-redrock --inputsample=iron-main-subset --rrtemplates=Y3-0.1
+for sample in "${samples[@]}"; do
+  for template in "${templates[@]}"; do
+    cmd="time Y3-templates --gather-redrock --inputsample=$sample --rrtemplates=$template"
+    echo $cmd
+    $cmd
+  done
+done
 
 * Build QA
-time $HOME/code/desihub/rrevaluator/bin/Y3-templates --build-qa
+time Y3-templates --qa-statgrids
 
 """
 import os, time, pdb
@@ -44,8 +35,6 @@ import numpy as np
 import fitsio
 from glob import glob
 from astropy.table import Table, vstack, join
-
-from desitarget import geomask
 
 from desiutil.log import get_logger
 log = get_logger()
@@ -56,13 +45,12 @@ zscan_priors = {
     'zscan02': '-0.005,4.0,3e-4'
     }
 
-#projectdir = os.path.join(os.getenv('DESI_ROOT'), 'users', 'ioannis', 'Y3-templates')
-projectdir = os.path.expandvars(os.path.join(os.getenv('PSCRATCH'), 'Y3-templates'))
+from rrevaluator.io import projectdir
 if not os.path.isdir(projectdir):
     os.makedirs(projectdir, exist_ok=True)
     
 
-def read_inputsample(inputsample):
+def read_inputsample(inputsample, mp=1):
     """Read the given sample.
 
     """
@@ -74,185 +62,66 @@ def read_inputsample(inputsample):
     if not os.path.isdir(sampledir):
         os.makedirs(sampledir, exist_ok=True)
 
+    # survey=='sv-main' is a special case of objects targeted in SV but in
+    # read_vi we apply 'main' target selection; this distinction is used in
+    # gather_redrock(), below.
     if inputsample == 'iron-cumulative-vi-all':
+        survey = 'sv1'
         coadd_type = 'cumulative'
         sample = read_vi(samplefile=os.path.join(sampledir, 'sample-iron-vi-all.fits'))
     elif inputsample == 'iron-pernight-vi-all':
+        survey = 'sv1'
         coadd_type = 'pernight'
         sample = read_vi(samplefile=os.path.join(sampledir, 'sample-iron-vi-all.fits'))
     elif inputsample == 'iron-cumulative-vi-main':
+        survey = 'sv-main'
         coadd_type = 'cumulative'
-        sample = read_vi(main=True, samplefile=os.path.join(sampledir, 'sample-iron-vi-main.fits'))
+        sample = read_vi(main=True, mp=mp, samplefile=os.path.join(sampledir, 'sample-iron-vi-main.fits'))
     elif inputsample == 'iron-pernight-vi-main':
+        survey = 'sv-main'
         coadd_type = 'pernight'
-        sample = read_vi(main=True, samplefile=os.path.join(sampledir, 'sample-iron-vi-main.fits'))
+        sample = read_vi(main=True, mp=mp, samplefile=os.path.join(sampledir, 'sample-iron-vi-main.fits'))
     elif inputsample == 'iron-main-subset':
+        survey = 'main'
         coadd_type = 'cumulative'
         sample = read_iron_main_subset(samplefile=os.path.join(sampledir, 'sample-iron-main-subset.fits'))
     elif inputsample == 'iron-redqso':
+        survey = 'sv'
         coadd_type = 'cumulative'
     else:
-        raise ValueError(f'Input sample {inputsample} not recognized.')
+        errmsg = f'Input sample {inputsample} not recognized.'
+        log.critical(errmsg)
+        raise ValueError(errmsg)
 
-    return sample, specprod, coadd_type
+    return sample, specprod, coadd_type, survey
 
 
-def gather_coadds(inputsample, pernight=False, overwrite=False):
+def gather_coadds(inputsample, mp=1, overwrite=False):
     """Gather the coadded spectra for the given sample.
 
     """
-    from desispec.io import read_spectra, write_spectra
+    from rrevaluator.io import gather_sample_coadds
+
+    sample, specprod, coadd_type, _ = read_inputsample(inputsample, mp=mp)
 
     outdir = os.path.join(projectdir, 'coadds', inputsample)
     if not os.path.isdir(outdir):
         os.makedirs(outdir, exist_ok=True)
 
-    sample, specprod, coadd_type = read_inputsample(inputsample)
+    gather_sample_coadds(sample, specprod, coadd_type, outdir=outdir, overwrite=overwrite)
 
-    for tileid in sorted(set(sample['TILEID'])):
-        T = tileid == sample['TILEID']
-        petals = sample['FIBER'][T] // 500
-        for petal in sorted(set(petals)):
-            P = petal == petals
-            targetids = sample[T][P]['TARGETID'].data
-
-            origdir = os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, 'tiles', coadd_type, str(tileid))
-            if coadd_type == 'cumulative':
-                coaddfile = os.path.join(outdir, f'coadd-{petal}-{tileid}.fits')
-                if not os.path.isfile(coaddfile) or overwrite:
-                    orig_coaddfile = glob(os.path.join(origdir, '*', f'coadd-{petal}-{tileid}-thru*.fits'))[0]
-                    spec = read_spectra(orig_coaddfile, targetids=targetids)
-                    assert(np.all(spec.target_ids() == targetids))
-                    log.info(f'Writing {len(targetids)} targets to {coaddfile}')
-                    write_spectra(coaddfile, spec)
-                else:
-                    log.info(f'Skipping existing file {coaddfile}')
-            elif coadd_type == 'pernight':
-                nightdirs = glob(os.path.join(origdir, '????????'))
-                for nightdir in nightdirs:
-                    night = os.path.basename(nightdir)
-                    coaddfile = os.path.join(outdir, f'coadd-{petal}-{tileid}-{night}.fits')
-                    if not os.path.isfile(coaddfile) or overwrite:
-                        orig_coaddfile = os.path.join(nightdir, f'coadd-{petal}-{tileid}-{night}.fits')
-                        # not all pernight petals exist
-                        if os.path.isfile(orig_coaddfile):
-                            spec = read_spectra(orig_coaddfile, targetids=targetids)
-                            assert(np.all(spec.target_ids() == targetids))
-                            log.info(f'Writing {len(targetids)} targets to {coaddfile}')
-                            write_spectra(coaddfile, spec)
-                    else:
-                        log.info(f'Skipping existing file {coaddfile}')
-
-
-def _copy_from_specprod(sample, specprod, coadd_type, outdir, overwrite):
-    """Copy existing Redrock+afterburner files from an existing specprod.
-
-    """
-    from redrock.results import read_zscan, write_zscan
-    
-    for tileid in sorted(set(sample['TILEID'])):
-        T = tileid == sample['TILEID']
-        petals = sample['FIBER'][T] // 500
-        for petal in sorted(set(petals)):
-            P = petal == petals
-            targetids = sample[T][P]['TARGETID'].data
-
-            origdir = os.path.join(os.getenv('DESI_ROOT'), 'spectro', 'redux', specprod, 'tiles', coadd_type, str(tileid))
-            if coadd_type == 'cumulative':
-                redrockfile = os.path.join(outdir, f'redrock-{petal}-{tileid}.fits')
-                rrdetailsfile = os.path.join(outdir, f'rrdetails-{petal}-{tileid}.h5')
-                if not os.path.isfile(redrockfile) or overwrite:
-                    orig_redrockfile = glob(os.path.join(origdir, '*', f'redrock-{petal}-{tileid}-thru*.fits'))[0]
-                    origdir = os.path.dirname(orig_redrockfile)
-                    thrunight = os.path.basename(origdir)
-                    orig_rrdetailsfile = os.path.join(origdir, f'rrdetails-{petal}-{tileid}-thru{thrunight}.h5')
-    
-                    alltargetids = fitsio.read(orig_redrockfile, ext='REDSHIFTS', columns='TARGETID')
-                    rows = np.where(np.isin(alltargetids, targetids))[0]
-    
-                    zbest = fitsio.read(orig_redrockfile, ext='REDSHIFTS', rows=rows)
-                    fm = fitsio.read(orig_redrockfile, ext='FIBERMAP', rows=rows)
-    
-                    I = geomask.match_to(zbest['TARGETID'], targetids)
-                    zbest = zbest[I]
-                    fm = fm[I]
-                    assert(np.all(zbest['TARGETID'] == targetids))
-                    assert(np.all(fm['TARGETID'] == targetids))
-        
-                    log.info(f'Writing {redrockfile}')
-                    fitsio.write(redrockfile, zbest, extname='REDSHIFTS', clobber=True)
-                    fitsio.write(redrockfile, fm, extname='FIBERMAP')
-    
-                    zscan, zfit = read_zscan(orig_rrdetailsfile, select_targetids=targetids)
-                    assert(len(np.unique(zfit['targetid']) == len(targetids)))
-                    log.info(f'Writing {rrdetailsfile}')
-                    write_zscan(rrdetailsfile, zscan, zfit, clobber=True)
-    
-                    for afterprefix, extname in zip(['qso_qn', 'qso_mgii', 'emline'], ['QN_RR', 'MGII', 'EMLINEFIT']):
-                        orig_afterfile = os.path.join(origdir, f'{afterprefix}-{petal}-{tileid}-thru{thrunight}.fits')
-                        afterfile = os.path.join(outdir, f'{afterprefix}-{petal}-{tileid}.fits')
-    
-                        after = fitsio.read(orig_afterfile, rows=rows, ext=extname)
-                        after = after[I]
-                        assert(np.all(after['TARGETID'] == targetids))
-    
-                        log.info(f'Writing {afterfile}')
-                        fitsio.write(afterfile, after, extname=extname, clobber=True)
-                else:
-                    log.info(f'Skipping existing file {redrockfile}')
-            elif coadd_type == 'pernight':
-                nightdirs = glob(os.path.join(origdir, '????????'))
-                for nightdir in nightdirs:
-                    night = os.path.basename(nightdir)
-                    redrockfile = os.path.join(outdir, f'redrock-{petal}-{tileid}-{night}.fits')
-                    rrdetailsfile = os.path.join(outdir, f'rrdetails-{petal}-{tileid}-{night}.h5')
-                    if not os.path.isfile(redrockfile) or overwrite:
-                        orig_redrockfile = os.path.join(nightdir, f'redrock-{petal}-{tileid}-{night}.fits')
-                        orig_rrdetailsfile = os.path.join(nightdir, f'rrdetails-{petal}-{tileid}-{night}.h5')
-                        # not all pernight petals exist
-                        if os.path.isfile(orig_redrockfile):
-                            alltargetids = fitsio.read(orig_redrockfile, ext='REDSHIFTS', columns='TARGETID')
-                            rows = np.where(np.isin(alltargetids, targetids))[0]
-            
-                            zbest = fitsio.read(orig_redrockfile, ext='REDSHIFTS', rows=rows)
-                            fm = fitsio.read(orig_redrockfile, ext='FIBERMAP', rows=rows)
-            
-                            I = geomask.match_to(zbest['TARGETID'], targetids)
-                            zbest = zbest[I]
-                            fm = fm[I]
-                            assert(np.all(zbest['TARGETID'] == targetids))
-                            assert(np.all(fm['TARGETID'] == targetids))
-                
-                            log.info(f'Writing {redrockfile}')
-                            fitsio.write(redrockfile, zbest, extname='REDSHIFTS', clobber=True)
-                            fitsio.write(redrockfile, fm, extname='FIBERMAP')
-            
-                            zscan, zfit = read_zscan(orig_rrdetailsfile, select_targetids=targetids)
-                            assert(np.all(np.unique(zfit['targetid']) == targetids))
-                            log.info(f'Writing {rrdetailsfile}')
-                            write_zscan(rrdetailsfile, zscan, zfit, clobber=True)
-            
-                            for afterprefix, extname in zip(['qso_qn', 'qso_mgii', 'emline'], ['QN_RR', 'MGII', 'EMLINEFIT']):
-                                orig_afterfile = os.path.join(nightdir, f'{afterprefix}-{petal}-{tileid}-{night}.fits')
-                                afterfile = os.path.join(outdir, f'{afterprefix}-{petal}-{tileid}-{night}.fits')
-            
-                                after = fitsio.read(orig_afterfile, rows=rows, ext=extname)
-                                after = after[I]
-                                assert(np.all(after['TARGETID'] == targetids))
-            
-                                log.info(f'Writing {afterfile}')
-                                fitsio.write(afterfile, after, extname=extname, clobber=True)
-                    else:
-                        log.info(f'Skipping existing file {redrockfile}')
-                        
 
 def run_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01',
                 nodes=4, time='00:10:00', queue='debug', afterburners=True,
                 overwrite=False):
-    """Run Redrock on the input sample.
+    """Copy Redrock+afterburners from an existing specprod or generate the Slurm
+    script which can be used to run (outside of this script) Redrock on a given
+    input sample.
 
     """
-    sample, specprod, coadd_type = read_inputsample(inputsample)
+    from rrevaluator.io import copy_redrock_from_specprod
+
+    sample, specprod, coadd_type, _ = read_inputsample(inputsample)
 
     redrockrun = f'{rrtemplates}-{zscan_prior}'
 
@@ -260,9 +129,10 @@ def run_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01',
     if not os.path.isdir(redrockdir):
         os.makedirs(redrockdir, exist_ok=True)
 
-    # old templates and redshift scan just copy over the relevant files
+    # Old templates and redshift scan: just copy over the relevant files.
     if rrtemplates == 'PCA-Iron' and zscan_prior == 'zscan01':
-        _copy_from_specprod(sample, specprod, coadd_type, redrockdir, overwrite)
+        copy_redrock_from_specprod(sample, specprod=specprod, coadd_type=coadd_type, outdir=redrockdir,
+                                   afterburners=afterburners, overwrite=overwrite)
     else:
         rrtemplatedir = os.path.join(projectdir, 'rrtemplates', rrtemplates)
         coaddfiles = glob(os.path.join(projectdir, 'coadds', inputsample, 'coadd-*.fits'))
@@ -306,9 +176,9 @@ def run_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01',
             S.write(f'#SBATCH --output={slurmfile.replace(".slurm", "-%j.log")}\n')
             S.write('\n')
             S.write('source /global/common/software/desi/desi_environment.sh main\n')
-            for package in ['redrock', 'desispec']:
-                S.write('export PATH=${HOME}/code/desihub/'+f'{package}/bin:'+'${PATH}\n')
-                S.write('export PYTHONPATH=${HOME}/code/desihub/'+f'{package}/py:'+'${PYTHONPATH}\n')
+            #for package in ['redrock', 'desispec']:
+            #    S.write('export PATH=${HOME}/code/desihub/'+f'{package}/bin:'+'${PATH}\n')
+            #    S.write('export PYTHONPATH=${HOME}/code/desihub/'+f'{package}/py:'+'${PYTHONPATH}\n')
             S.write(f'export RR_TEMPLATE_DIR={rrtemplatedir}\n')
             S.write('\n')
             #srun -N 2 -n 8 -c 2 --gpu-bind=map_gpu:3,2,1,0 wrap_rrdesi --input={coaddfilelist} --output={redrockdir} --gpu
@@ -325,9 +195,9 @@ def gather_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01', o
     and redshift scan.
 
     """
-    from desispec.validredshifts import validate
+    #from desispec.validredshifts import validate
 
-    sample, specprod, coadd_type = read_inputsample(inputsample)
+    sample, specprod, coadd_type, survey = read_inputsample(inputsample)
 
     redrockrun = f'{rrtemplates}-{zscan_prior}'
 
@@ -341,11 +211,58 @@ def gather_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01', o
             return
 
         redrockfiles = glob(os.path.join(redrockdir, 'redrock-*.fits'))
+
+        rrcols = ['TARGETID', 'Z', 'ZWARN', 'SPECTYPE', 'DELTACHI2']
+        fmcols = ['TARGETID', 'COADD_FIBERSTATUS']
+        if survey == 'sv-main':
+            from desitarget.targetmask import desi_mask, bgs_mask
+            desi_target_col, bgs_target_col = 'DESI_TARGET', 'BGS_TARGET'
+        else:
+            if survey == 'main':
+                from desitarget.targetmask import desi_mask, bgs_mask
+                desi_target_col, bgs_target_col = 'DESI_TARGET', 'BGS_TARGET'
+            elif survey == 'sv1':
+                from desitarget.sv1.sv1_targetmask import desi_mask, bgs_mask
+                desi_target_col, bgs_target_col = 'SV1_DESI_TARGET', 'SV1_BGS_TARGET'
+            else:
+                errmsg = f'Unrecognized survey {survey}; need to add another case!'
+                log.critical(errmsg)
+                raise ValueError(errmsg)
+            
+            fmcols += [desi_target_col, bgs_target_col]
+        
         zcats = []
         for redrockfile in redrockfiles:
-            zcat = validate(redrockfile, return_target_columns=True,
-                            extra_columns=['TARGETID', 'Z', 'Z_RR', 'ZWARN', 'COADD_FIBERSTATUS', 'SPECTYPE', 'DELTACHI2'])
+            rr = Table(fitsio.read(redrockfile, 'REDSHIFTS', columns=rrcols))
+            fm = Table(fitsio.read(redrockfile, 'FIBERMAP', columns=fmcols))
+            zcat = join(rr, fm)
+
+            # add the appropriate targeting bits
+            if survey == 'sv-main':
+                zcat = join(zcat, sample['TARGETID', 'DESI_TARGET', 'BGS_TARGET'])
+
+            if 'main' in survey:
+                for targ in ['BGS_BRIGHT', 'BGS_FAINT', 'LRG']:
+                    if 'BGS' in targ:
+                        zcat[targ] = zcat[bgs_target_col] & bgs_mask[targ] > 0
+                    else:
+                        zcat[targ] = zcat[desi_target_col] & desi_mask[targ] > 0
+
+                #ELG_LOP (not QSO), QSO (not ELG), QSO & ELG, ELG_VLO (not QSO)
+                zcat['QSO_ELG'] = (zcat[desi_target_col] & desi_mask['QSO'] != 0) & (zcat[desi_target_col] & desi_mask['ELG'] != 0)
+                zcat['QSO_notELG'] = (zcat[desi_target_col] & desi_mask['QSO'] != 0) & (zcat[desi_target_col] & desi_mask['ELG'] == 0)
+                zcat['ELG_LOP_notQSO'] = (zcat[desi_target_col] & desi_mask['ELG_LOP'] != 0) & (zcat[desi_target_col] & desi_mask['QSO'] == 0)
+                zcat['ELG_VLO_notQSO'] = (zcat[desi_target_col] & desi_mask['ELG_VLO'] != 0) & (zcat[desi_target_col] & desi_mask['QSO'] == 0)
+            else:
+                for targ in ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'QSO']:
+                    if 'BGS' in targ:
+                        zcat[f'{survey.upper()}_{targ}'] = zcat[bgs_target_col] & bgs_mask[targ] > 0
+                    else:
+                        zcat[f'{survey.upper()}_{targ}'] = zcat[desi_target_col] & desi_mask[targ] > 0
+                    
+            #zcat = validate(redrockfile, return_target_columns=False, extra_columns=cols)
             log.info(f'Validated {len(zcat)} targets from {redrockfile}')
+
             zcats.append(zcat)
         zcat = vstack(zcats)
 
@@ -354,45 +271,27 @@ def gather_redrock(inputsample, rrtemplates='PCA-Iron', zscan_prior='zscan01', o
         zcat.meta['EXTNAME'] = 'ZCAT'
         zcat.write(out_zcatfile, overwrite=True)
         log.info(f'Wrote {len(zcat):,d} objects to {out_zcatfile}')
+    else:
+        log.info(f'Skipping existing file {out_zcatfile}; overwrite with --overwrite')
 
 
-def getstats(z, ztrue, zwarn, vcut=1e3):
-    """
-    * Purity = what fraction of redrock confident answers were actually correct?  i.e. #(goodz AND ZWARN=0)/#(ZWARN=0)
-    * Completeness = what fraction of all good VI entries had correct and confident redshifts? i.e. #(goodz AND ZWARN=0)/#(total)
-    * Catastrophic outliers = minimize number of wrong answers incorrectly flagged as good, i.e. #(badz AND ZWARN=0) / #(total)
-
-    """
-    Ntotal = len(z)
-    if Ntotal == 0:
-        return 0, np.nan, np.nan, np.nan
-
-    C_LIGHT = 299792.458 # [km/s]
-
-    dz = z - ztrue
-    goodz = (C_LIGHT * np.abs(dz) / (1. + ztrue)) < vcut
-    badz = np.logical_not(goodz)
-    nozwarn = zwarn == 0
-
-    Nnozwarn = np.sum(nozwarn)
-    
-    fpurity = np.sum(goodz * nozwarn) / Nnozwarn
-    fcomplete = np.sum(goodz * nozwarn) / Ntotal
-    foutliers = np.sum(badz * nozwarn) / Ntotal
-
-    return Ntotal, fpurity, fcomplete, foutliers
-
-
-def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_prior='zscan01'):
-    """Build QA for all samples.
+def qa_statgrids(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_prior='zscan01'):
+    """Build statistics grids QA.
 
     """
     import matplotlib.pyplot as plt
     import matplotlib.ticker as mticker    
     from matplotlib.image import imread
     import seaborn as sns
+    from rrevaluator.util import getstats
 
-    def _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title):
+    purity = 'N(zgood & zwarn=0) / N(zwarn=0)'
+    complete = 'N(zgood & zwarn=0) / N(targets)'
+    outlier = 'N(zbad & zwarn=0) / N(zwarn=0)'
+
+    def _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, nice_targetclasses, vi=True, verbose=True):
+        ntargetclass = len(nice_targetclasses)
+
         fig, ax = plt.subplots(figsize=(10, 6))
         hmap = ax.imshow(grid, vmin=vminmax[0], vmax=vminmax[1], cmap=cmap)
 
@@ -410,10 +309,13 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
 
         ax.set_xticks(np.arange(ntargetclass))
         ax.set_yticks(np.arange(nspectype))
-        ax.set_xticklabels(nice_targetclasses, rotation=45)
+        ax.set_xticklabels(nice_targetclasses, rotation=-45)
         ax.set_yticklabels(spectypes)
         ax.set_xlabel('Target Class')
-        ax.set_ylabel('RR SPECTYPE')
+        if vi:
+            ax.set_ylabel('VI SPECTYPE')
+        else:
+            ax.set_ylabel('RR SPECTYPE')
 
         for irow in range(nspectype):
             ax.axhline(y=irow+0.5, color='k')
@@ -434,10 +336,12 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
         #fig.tight_layout()
         fig.savefig(pngfile, bbox_inches='tight', pad_inches=0.25)
         plt.close()
-        log.info(f'Wrote {pngfile}')
+        if verbose:
+            log.info(f'Wrote {pngfile}')
 
 
-    def _buildgrids(zcat, ztrue):
+    def _buildgrids(zcat, ztrue, targetclasses, vi=True):
+        ntargetclass = len(targetclasses)
         grid_N = np.zeros((nspectype, ntargetclass), int)
         grid_purity = np.zeros((nspectype, ntargetclass), 'f4')
         grid_completeness = np.zeros((nspectype, ntargetclass), 'f4')
@@ -445,16 +349,23 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
 
         for irow, spectype in enumerate(spectypes):
             for icol, targetclass in enumerate(targetclasses):
-                if spectype == 'ALL' and targetclass == 'ALL':
+                if spectype == 'ANY' and targetclass == 'ALL':
                     I = np.arange(len(zcat))
-                elif spectype == 'ALL' and targetclass != 'ALL':
+                elif spectype == 'ANY' and targetclass != 'ALL':
                     I = np.where(zcat[targetclass])[0]
-                elif spectype != 'ALL' and targetclass == 'ALL':
-                    I = np.where(zcat['SPECTYPE'] == spectype)[0]
+                elif spectype != 'ANY' and targetclass == 'ALL':
+                    if vi:
+                        I = np.where(zcat['VI_SPECTYPE'] == spectype)[0]
+                    else:
+                        I = np.where(zcat['SPECTYPE'] == spectype)[0]
                 else:
-                    I = np.where(zcat[targetclass] * (zcat['SPECTYPE'] == spectype))[0]
+                    if vi:
+                        I = np.where(zcat[targetclass] * (zcat['VI_SPECTYPE'] == spectype))[0]
+                    else:
+                        I = np.where(zcat[targetclass] * (zcat['SPECTYPE'] == spectype))[0]
         
-                N, fpure, fcomp, fout = getstats(zcat['Z_RR'][I], ztrue[I], zcat['ZWARN'][I])
+                N, fpure, fcomp, fout = getstats(zcat['Z'][I], ztrue[I], zcat['ZWARN'][I])
+                #N, fpure, fcomp, fout = getstats(zcat['Z_RR'][I], ztrue[I], zcat['ZWARN'][I])
                 grid_N[irow, icol] = N
                 grid_purity[irow, icol] = 100 * fpure
                 grid_completeness[irow, icol] = 100 * fcomp
@@ -463,10 +374,10 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
         return grid_N, grid_purity, grid_completeness, grid_outliers
 
 
-    def _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, refrrtemplates=None):
+    def _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=(16, 12), refrrtemplates=None):
         pngfile = os.path.join(qadir, f'qa-{refprefix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')            
         imgs = [imread(pngfile) for pngfile in pngfiles]
-        fig, ax = plt.subplots(2, 2, figsize=(16, 12))
+        fig, ax = plt.subplots(2, 2, figsize=figsize)
         for xx, img in zip(ax.flat, imgs):
             xx.imshow(img)
             xx.axis('off')
@@ -475,6 +386,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
         else:
             fig.text(0.5, 0.96, f'{inputsample}::{rrtemplates}', va='center', ha='center', fontsize=18)
         fig.tight_layout()
+        fig.subplots_adjust(top=0.95)
         fig.savefig(pngfile)
         plt.close()
         log.info(f'Wrote {pngfile}')
@@ -489,18 +401,18 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
     if not os.path.isdir(qadir):
         os.makedirs(qadir, exist_ok=True)
 
-    spectypes = ['STAR', 'GALAXY', 'QSO', 'ALL']
-    targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'QSO', 'ALL']
+    spectypes = ['STAR', 'GALAXY', 'QSO', 'ANY']
+    vi_spectypes = ['STAR', 'GALAXY', 'QSO', 'ALL']
+    #targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'QSO', 'ALL']
     #targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'ELG_LOP', 'QSO', 'ALL']
     #targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'BGS_ANY', 'LRG', 'ELG', 'ELG_LOP', 'ELG_HIP', 'ELG_VLO', 'QSO']
-    nice_targetclasses = [targetclass.replace('_', ' ') for targetclass in targetclasses]
+    #nice_targetclasses = [targetclass.replace('_', ' ') for targetclass in targetclasses]
 
     nspectype = len(spectypes)
-    ntargetclass = len(targetclasses)
 
     vminmaxes = {
-        'iron-cumulative-vi-all':  {'purity': [90., 100.], 'completeness': [90., 100.], 'outliers': [0., 5.]},
-        'iron-cumulative-vi-main': {'purity': [90., 100.], 'completeness': [90., 100.], 'outliers': [0., 5.]},
+        'iron-cumulative-vi-all':  {'purity': [90., 100.], 'completeness': [90., 100.], 'outliers': [0., 10.]},
+        'iron-cumulative-vi-main': {'purity': [90., 100.], 'completeness': [90., 100.], 'outliers': [0., 10.]},
         'iron-pernight-vi-all':    {'purity': [80., 100.], 'completeness': [80., 100.], 'outliers': [0., 10.]},
         'iron-pernight-vi-main':   {'purity': [80., 100.], 'completeness': [80., 100.], 'outliers': [0., 10.]},
         'iron-main-subset':        {'purity': [80., 100.], 'completeness': [80., 100.], 'outliers': [0., 10.]},
@@ -515,7 +427,7 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
         vv = vminmaxes[inputsample]
         
         refzcat = Table(fitsio.read(refzcatfile))
-        log.info(f'Read {len(refzcat):,d} objects from {refzcatfile}')        
+        log.debug(f'Read {len(refzcat):,d} objects from {refzcatfile}')        
         
         for rrtemplates in np.atleast_1d(allrrtemplates):
             zcatfile = os.path.join(projectdir, f'zcat-{inputsample}-{rrtemplates}-{zscan_prior}.fits')
@@ -524,12 +436,24 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                 continue
             
             zcat = Table(fitsio.read(zcatfile))
-            log.info(f'Read {len(zcat):,d} objects from {zcatfile}')
+            log.debug(f'Read {len(zcat):,d} objects from {zcatfile}')
             assert(np.all(zcat['TARGETID'] == refzcat['TARGETID']))
+
+            if 'ELG_VLO_notQSO' in zcat.columns:
+                targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'QSO_ELG', 'QSO_notELG', 'ELG_LOP_notQSO', 'ELG_VLO_notQSO', 'ALL']
+                onefig_figsize = (16, 10)
+            elif 'SV1_LRG' in zcat.columns:
+                targetclasses = ['SV1_BGS_BRIGHT', 'SV1_BGS_FAINT', 'SV1_LRG', 'SV1_ELG', 'SV1_QSO', 'ALL']
+                onefig_figsize = (16, 12)
+            else:
+                targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'QSO', 'ALL']
+                onefig_figsize = (16, 12)
+                
+            nice_targetclasses = [targetclass.replace('_', '-').replace('-not', ' & not ').replace('QSO-ELG', 'QSO & ELG') for targetclass in targetclasses]
 
             if 'VI_Z' in zcat.columns:
                 refprefix = 'refvi'
-                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, zcat['VI_Z'])
+                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, zcat['VI_Z'], targetclasses, vi=True)
 
                 pngfiles = []
                 for grid, suffix, vminmax, cmap, cbarlabel, title in zip(
@@ -538,17 +462,19 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                         [[0, 1.2*np.max(grid_N)], vv['purity'], vv['completeness'], vv['outliers']],
                         ['Greens', 'coolwarm_r', 'coolwarm_r', 'coolwarm'],
                         [r'Number of Targets', 'Percent', 'Percent', 'Percent'],
-                        ['Sample\n', 'Purity\n', 'Completeness\n', 'Catastrophic Outliers\n']):
+                        ['Sample\n', f'Purity: {purity}\n', f'Completeness: {complete}\n', f'Catastrophic Outliers: {outlier}\n']):
                     pngfile = os.path.join(qadir, f'qa-{refprefix}-{suffix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')
                     pngfiles.append(pngfile)
-                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title)
-                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior)
+                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, nice_targetclasses, vi=True, verbose=False)
+                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=onefig_figsize)
+                [os.remove(pngfile) for pngfile in pngfiles]
 
-                # compare vs iron
-                refprefix = 'refiron'
-                refgrid_N, refgrid_purity, refgrid_completeness, refgrid_outliers = _buildgrids(refzcat, refzcat['VI_Z'])
-
-                deltagrid_N = grid_N - refgrid_N
+                # compare vs the reference grid (PCA-Iron)
+                refprefix = 'deltarefiron'
+                refgrid_N, refgrid_purity, refgrid_completeness, refgrid_outliers = _buildgrids(refzcat, refzcat['VI_Z'], targetclasses, vi=True)
+    
+                deltagrid_N = grid_N # full sample, not Delta(sample)
+                #deltagrid_N = grid_N - refgrid_N
                 deltagrid_purity = grid_purity - refgrid_purity
                 deltagrid_completeness = grid_completeness - refgrid_completeness
                 deltagrid_outliers = refgrid_outliers - grid_outliers
@@ -560,16 +486,17 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                         [[0, 1.2*np.max(deltagrid_N)], [-10., 10], [-10., 10], [-10., 10]],
                         ['Greens', 'coolwarm_r', 'coolwarm_r', 'coolwarm_r'],
                         [r'Number of Targets', 'Percent', 'Percent', 'Percent'],
-                        [r'$\Delta$(Sample)'+'\n', r'$\Delta$(Purity)'+'\n', r'$\Delta$(Completeness)'+'\n', r'$\Delta$(Catastrophic Outliers)'+'\n']):
+                        [r'Sample'+'\n', r'$\Delta$(Purity)'+'\n', r'$\Delta$(Completeness)'+'\n', r'$\Delta$(Catastrophic Outliers)'+'\n']):
                     pngfile = os.path.join(qadir, f'qa-{refprefix}-{suffix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')
                     pngfiles.append(pngfile)
-                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title)
-                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, refrrtemplates=refrrtemplates)
+                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, nice_targetclasses, vi=True, verbose=False)
+                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=onefig_figsize, refrrtemplates=refrrtemplates)
+                [os.remove(pngfile) for pngfile in pngfiles]
             else:
-                # compare vs iron
                 refprefix = 'refiron'
-                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z_RR'])
-
+                grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z'], targetclasses, vi=False)
+                #grid_N, grid_purity, grid_completeness, grid_outliers = _buildgrids(zcat, refzcat['Z_RR'], targetclasses, vi=False)
+                
                 pngfiles = []
                 for grid, suffix, vminmax, cmap, cbarlabel, title in zip(
                         [grid_N, grid_purity, grid_completeness, grid_outliers],
@@ -580,10 +507,11 @@ def build_qa(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_p
                         ['Sample\n', 'Purity\n', 'Completeness\n', 'Catastrophic Outliers\n']):
                     pngfile = os.path.join(qadir, f'qa-{refprefix}-{suffix}-{inputsample}-{rrtemplates}-{zscan_prior}.png')
                     pngfiles.append(pngfile)
-                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title)
-                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior)
+                    _gridplot(grid, pngfile, cmap, vminmax, cbarlabel, title, nice_targetclasses, vi=False, verbose=False)
+                _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=onefig_figsize)
+                [os.remove(pngfile) for pngfile in pngfiles]
 
-            
+                
 def main():
     """Main wrapper."""
 
@@ -592,33 +520,34 @@ def main():
     allinputsamples = ['iron-cumulative-vi-all', 'iron-cumulative-vi-main',
                        'iron-pernight-vi-all', 'iron-pernight-vi-main',
                        'iron-main-subset', 'iron-redqso']
-    allrrtemplates = ['PCA-Iron', 'Y3-0.1']
+    allrrtemplates = ['PCA-Iron', 'Y3-0.1', 'Y3-0.2.0', 'Y3-0.2.1']
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('--inputsample', choices=allinputsamples, type=str, help='Input sample to analyze.')
     parser.add_argument('--rrtemplates', choices=allrrtemplates, type=str, help='Redrock templates.')
     parser.add_argument('--zscan-prior', default='zscan01', type=str, help='Galaxy redshift scan prior.')
-
+    parser.add_argument('--mp', type=int, default=1, help='number of multiprocessing cores')
+    
     parser.add_argument('--gather-coadds', action='store_true', help='Gather the coadded spectra.')
     parser.add_argument('--run-redrock', action='store_true', help='Gather the coadded spectra.')
     parser.add_argument('--gather-redrock', action='store_true', help='Gather the Redrock fitting results.')
-    parser.add_argument('--build-qa', action='store_true', help='Build QA.')
+    parser.add_argument('--qa-statgrids', action='store_true', help='Build the statistics grids QA.')
 
     parser.add_argument('--overwrite', action='store_true', help='Overwrite existing files.')
     args = parser.parse_args()
 
     # gather the coadds
     if args.gather_coadds:
-        gather_coadds(inputsample=args.inputsample, overwrite=args.overwrite)
+        gather_coadds(inputsample=args.inputsample, mp=args.mp, overwrite=args.overwrite)
         
     # run Redrock
     if args.run_redrock:
         config = {
-            'iron-cumulative-vi-all':  {'time': '00:15:00', 'queue': 'debug',   'nodes': 2},
-            'iron-cumulative-vi-main': {'time': '00:10:00', 'queue': 'debug',   'nodes': 2},
-            'iron-pernight-vi-all':    {'time': '00:30:00', 'queue': 'debug',   'nodes': 4},
-            'iron-pernight-vi-main':   {'time': '00:30:00', 'queue': 'debug',   'nodes': 4},
+            'iron-cumulative-vi-all':  {'time': '00:30:00', 'queue': 'debug',   'nodes': 2},
+            'iron-cumulative-vi-main': {'time': '00:20:00', 'queue': 'debug',   'nodes': 2},
+            'iron-pernight-vi-all':    {'time': '01:00:00', 'queue': 'regular', 'nodes': 4},
+            'iron-pernight-vi-main':   {'time': '01:00:00', 'queue': 'regular', 'nodes': 4},
             'iron-main-subset':        {'time': '01:00:00', 'queue': 'regular', 'nodes': 8},
             }
         config = config[args.inputsample]
@@ -630,16 +559,16 @@ def main():
     if args.gather_redrock:
         gather_redrock(inputsample=args.inputsample, rrtemplates=args.rrtemplates, overwrite=args.overwrite)
         
-    # build QA for the given inputsample, templateset, and zscan prior
-    if args.build_qa:
-        tmp_allinputsamples = ['iron-main-subset']
-        #tmp_allinputsamples = ['iron-cumulative-vi-main']
-        #tmp_allinputsamples = ['iron-cumulative-vi-all', 'iron-cumulative-vi-main',
-        #                       'iron-pernight-vi-all', 'iron-pernight-vi-main',
-        #                       'iron-main-subset']
-        build_qa(tmp_allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron',
-                 zscan_prior=args.zscan_prior)
-
+    # build the statistics grids for the given inputsample, templateset, and zscan prior
+    if args.qa_statgrids:
+        tmp_allinputsamples = ['iron-cumulative-vi-all', 'iron-cumulative-vi-main',
+                               'iron-pernight-vi-all', 'iron-pernight-vi-main',
+                               'iron-main-subset']
+        tmp_allinputsamples = ['iron-cumulative-vi-main']
+        #tmp_allinputsamples = ['iron-main-subset']
+        qa_statgrids(tmp_allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron',
+                     zscan_prior=args.zscan_prior)
+        
         
 if __name__ == '__main__':
     main()
