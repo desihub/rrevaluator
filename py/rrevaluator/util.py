@@ -10,11 +10,11 @@ import numpy as np
 from desiutil.log import get_logger
 log = get_logger()
 
-def getstats(z, ztrue, zwarn, vcut=1e3):
+def getstats(z, ztrue, zwarn, vcut=3e3, indices=False):
     """
     * Purity = what fraction of redrock confident answers were actually correct?  i.e. #(goodz AND ZWARN=0)/#(ZWARN=0)
     * Completeness = what fraction of all good VI entries had correct and confident redshifts? i.e. #(goodz AND ZWARN=0)/#(total)
-    * Catastrophic outliers = minimize number of wrong answers incorrectly flagged as good, i.e. #(badz AND ZWARN=0) / #(total)
+    * Catastrophic outliers = minimize number of wrong answers incorrectly flagged as good, i.e. #(badz AND ZWARN=0) / #(ZWARN=0)
 
     """
     Ntotal = len(z)
@@ -29,12 +29,17 @@ def getstats(z, ztrue, zwarn, vcut=1e3):
     nozwarn = zwarn == 0
 
     Nnozwarn = np.sum(nozwarn)
-    
-    fpurity = np.sum(goodz * nozwarn) / Nnozwarn
-    fcomplete = np.sum(goodz * nozwarn) / Ntotal
-    foutliers = np.sum(badz * nozwarn) / Nnozwarn
 
-    return Ntotal, fpurity, fcomplete, foutliers
+    if indices:
+        Ipurity = np.where(goodz * nozwarn)[0]
+        Icomplete = np.where(goodz * nozwarn)[0]
+        Ioutliers = np.where(badz * nozwarn)[0]
+        return Ntotal, Ipurity, Icomplete, Ioutliers        
+    else:
+        fpurity = np.sum(goodz * nozwarn) / Nnozwarn
+        fcomplete = np.sum(goodz * nozwarn) / Ntotal
+        foutliers = np.sum(badz * nozwarn) / Nnozwarn
+        return Ntotal, fpurity, fcomplete, foutliers
 
 
 def zstats(z, ztrue, vcut=1e3):
