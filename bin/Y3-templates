@@ -2,7 +2,7 @@
 
 """Evaluate the Y3 templates.
 
-samples=("iron-cumulative-vi-all" "iron-cumulative-vi-main" "iron-pernight-vi-all" "iron-pernight-vi-main" "iron-main-subset")
+samples=("iron-cumulative-vi-all" "iron-cumulative-vi-main" "iron-pernight-vi-all" "iron-pernight-vi-main" "iron-main-subset" "iron-main-subset-sky")
 templates=("PCA-Iron" "Y3-0.1" "Y3-0.2.0" "Y3-0.2.1")
 
 * Gather the coadds.
@@ -52,13 +52,11 @@ if not os.path.isdir(projectdir):
     os.makedirs(projectdir, exist_ok=True)
     
 
-def read_inputsample(inputsample, mp=1):
+def read_inputsample(inputsample, mp=1, specprod='iron'):
     """Read the given sample.
 
     """
     from rrevaluator.io import read_vi, read_iron_main_subset
-
-    specprod = 'iron'
 
     sampledir = os.path.join(projectdir, 'sample')
     if not os.path.isdir(sampledir):
@@ -87,6 +85,10 @@ def read_inputsample(inputsample, mp=1):
         survey = 'main'
         coadd_type = 'cumulative'
         sample = read_iron_main_subset(samplefile=os.path.join(sampledir, 'sample-iron-main-subset.fits'))
+    elif inputsample == 'iron-main-subset-sky':
+        survey = 'main'
+        coadd_type = 'cumulative'
+        sample = read_iron_main_subset(samplefile=os.path.join(sampledir, 'sample-iron-main-subset-sky.fits'), sky=True)
     elif inputsample == 'iron-redqso':
         survey = 'sv'
         coadd_type = 'cumulative'
@@ -588,7 +590,7 @@ def main():
 
     allinputsamples = ['iron-cumulative-vi-all', 'iron-cumulative-vi-main',
                        'iron-pernight-vi-all', 'iron-pernight-vi-main',
-                       'iron-main-subset', 'iron-redqso']
+                       'iron-main-subset', 'iron-main-subset-sky', 'iron-redqso']
     allrrtemplates = ['PCA-Iron', 'Y3-0.1', 'Y3-0.2.0', 'Y3-0.2.1']
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -619,6 +621,7 @@ def main():
             'iron-pernight-vi-all':    {'time': '01:00:00', 'queue': 'regular', 'nodes': 4},
             'iron-pernight-vi-main':   {'time': '01:00:00', 'queue': 'regular', 'nodes': 4},
             'iron-main-subset':        {'time': '01:00:00', 'queue': 'regular', 'nodes': 8},
+            'iron-main-subset-sky':    {'time': '01:00:00', 'queue': 'regular', 'nodes': 8},
             }
         config = config[args.inputsample]
         run_redrock(inputsample=args.inputsample, rrtemplates=args.rrtemplates,

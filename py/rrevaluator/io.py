@@ -185,7 +185,7 @@ def read_vi(quality=2.5, mp=1, vi_spectype=None, samplefile=None, veto_fibers=Tr
     return allvi
 
 
-def read_iron_main_subset(samplefile=None, veto_fibers=True):
+def read_iron_main_subset(samplefile=None, veto_fibers=True, sky=False):
     """Read the subset of Iron/main tiles identified by Jaime.
 
     https://desisurvey.slack.com/archives/C05QG3VBBPB/p1709747811273839
@@ -202,9 +202,7 @@ def read_iron_main_subset(samplefile=None, veto_fibers=True):
     'EFFTIME_SPEC', and high 'TILEDEC'.
 
     """
-    def _build_sample():
-        specprod = 'iron'
-    
+    def _build_sample(sky=False, specprod='iron'):
         tilefile = os.path.join(projectdir, 'sample', 'tiles-iron-main-subset.csv')
         tilelist = Table.read(tilefile)
         log.info(f'Read {len(tilelist):,d} tiles from {tilefile}')
@@ -218,7 +216,10 @@ def read_iron_main_subset(samplefile=None, veto_fibers=True):
                 if len(coaddfile) > 0:
                     coaddfile = coaddfile[0]
                     objtypes = fitsio.read(coaddfile, ext='FIBERMAP', columns='OBJTYPE')
-                    rows = np.where(objtypes == 'TGT')[0]
+                    if sky:
+                        rows = np.where(objtypes == 'SKY')[0]
+                    else:
+                        rows = np.where(objtypes == 'TGT')[0]
                     fm = Table(fitsio.read(coaddfile, ext='FIBERMAP', columns=['TARGETID', 'TILEID', 'PETAL_LOC', 'FIBER', 'TARGET_RA', 'TARGET_DEC'], rows=rows))
                     log.info(f'Read {len(fm):,d} objects from {coaddfile}')            
                     sample.append(fm)
@@ -229,7 +230,7 @@ def read_iron_main_subset(samplefile=None, veto_fibers=True):
         sample = Table(fitsio.read(samplefile))
         log.info(f'Read {len(sample):,d} objects from {samplefile}')
     else:
-        sample = _build_sample()
+        sample = _build_sample(sky=sky)
         if samplefile is not None:
             log.info(f'Writing {len(sample):,d} objects to {samplefile}')        
             sample.write(samplefile, overwrite=True)
