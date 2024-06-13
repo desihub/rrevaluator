@@ -584,8 +584,7 @@ def _gather_outliers(zcat, refzcat, inputsample, rrtemplates, refrrtemplates='PC
     return allout
     
                 
-def _qa_outliers(out, templates, reftemplates, inputsample, rrtemplates,
-                 refrrtemplates, pdffile, nsmooth=2):
+def _qa_outliers(out, templates, inputsample, rrtemplates, refrrtemplates, pdffile, nsmooth=2):
     """QA-building wrapper for qa_outliers.
 
     """
@@ -593,7 +592,7 @@ def _qa_outliers(out, templates, reftemplates, inputsample, rrtemplates,
     import seaborn as sns
     import matplotlib.pyplot as plt
     from matplotlib.backends.backend_pdf import PdfPages
-    from redrock.templates import eval_model
+    from redrock.templates import eval_model, load_templates_from_header
     from redrock.results import read_zscan
     from desispec.io import read_spectra
     from desispec.resolution import Resolution
@@ -613,13 +612,18 @@ def _qa_outliers(out, templates, reftemplates, inputsample, rrtemplates,
     bbox = dict(boxstyle='round', facecolor='lightgray', alpha=0.5)
     zscancolors = {'GALAXY': 'k', 'STAR': 'k', 'QSO': 'k'}
 
+    reftemplates = None
+
     pdf = PdfPages(pdffile)
     for ipage, out1 in enumerate(out):
         log.info(f'Building page {ipage+1}/{len(out)}')
     
         targetid = out1['TARGETID']
         spec = read_spectra(out1['COADDFILE'], targetids=targetid)
-    
+
+        if reftemplates is None:
+            reftemplates = load_templates_from_header(fitsio.read_header(out1['REFREDROCKFILE'], ext=1), asdict=True)
+        
         # evaluate the best-fitting redrock model for each template set
         row = np.where(fitsio.read(out1['REDROCKFILE'], 'REDSHIFTS', columns='TARGETID') == targetid)[0]
         zbest = Table(fitsio.read(out1['REDROCKFILE'], 'REDSHIFTS', rows=row))
@@ -630,6 +634,7 @@ def _qa_outliers(out, templates, reftemplates, inputsample, rrtemplates,
         R = {}
         for cam in spec.bands:
             R[cam] = [Resolution(spec.resolution_data[cam].squeeze())] # 1-length
+            
         rrmodel = eval_model(zbest, spec.wave, R=R, templates=templates)
         refrrmodel = eval_model(refzbest, spec.wave, R=R, templates=reftemplates)
             
@@ -700,6 +705,7 @@ def qa_outliers(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zsca
     """Build outliers QA.
 
     """
+    #from importlib import resources
     from redrock.templates import load_templates
 
     qadir = os.path.join(os.getenv('DESI_ROOT'), 'users', 'ioannis', 'tmp', 'qa', 'outliers')
@@ -735,10 +741,7 @@ def qa_outliers(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zsca
 
             # load the templates
             rrtemplatedir = os.path.join(projectdir, 'rrtemplates', rrtemplates)
-            refrrtemplatedir = os.path.join(projectdir, 'rrtemplates', refrrtemplates)
-
             templates = load_templates(template_path=rrtemplatedir, zscan_galaxy=zscan_priors[zscan_prior], asdict=True)
-            reftemplates = load_templates(template_path=refrrtemplatedir, zscan_galaxy=zscan_priors[zscan_prior], asdict=True)
 
             for spectype in sorted(set(allout['SPECTYPE'])):
                 for targetclass in sorted(set(allout['TARGETCLASS'])):
@@ -756,7 +759,7 @@ def qa_outliers(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zsca
                     out = out[:nplot]
 
                     pdffile = os.path.join(qadir, f'outliers-{inputsample}-{rrtemplates}-{zscan_prior}-{spectype}-{targetclass}.pdf')
-                    _qa_outliers(out, templates, reftemplates, inputsample, rrtemplates, refrrtemplates, pdffile)
+                    _qa_outliers(out, templates, inputsample, rrtemplates, refrrtemplates, pdffile)
                     pdb.set_trace()
 
 
