@@ -47,6 +47,7 @@ zscan_priors = {
     'zscan02': '-0.005,4.0,3e-4'
     }
 
+
 from rrevaluator.io import projectdir
 if not os.path.isdir(projectdir):
     os.makedirs(projectdir, exist_ok=True)
@@ -515,25 +516,196 @@ def qa_statgrids(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zsc
                 _onefig(pngfiles, refprefix, inputsample, rrtemplates, zscan_prior, figsize=onefig_figsize)
                 [os.remove(pngfile) for pngfile in pngfiles]
 
-                
-def qa_outliers(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_prior='zscan01',
-                vi_quality=3., nsmooth=2, nplotmax=20):
-    """Build outliers QA.
+
+def _gather_outliers(zcat, refzcat, inputsample, rrtemplates, refrrtemplates='PCA-Iron',
+                     zscan_prior='zscan01', vcut=3e3):
+    """Wrapper to identify outliers within a given inputsample and template set.
 
     """
-    import matplotlib.pyplot as plt
-    import seaborn as sns
+    from astropy.table import hstack, vstack
     from rrevaluator.util import getstats
+
+    vi_spectypes = ['STAR', 'GALAXY', 'QSO']
+    
+    coadddir = os.path.join(projectdir, 'coadds', inputsample)
+    redrockdir = os.path.join(projectdir, 'redrock', inputsample, f'{rrtemplates}-{zscan_prior}')
+    refredrockdir = os.path.join(projectdir, 'redrock', inputsample, f'{refrrtemplates}-{zscan_prior}')
+
+    if 'ELG_VLO_notQSO' in zcat.columns:
+        targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'QSO_ELG', 'QSO_notELG', 'ELG_LOP_notQSO', 'ELG_VLO_notQSO']
+    elif 'SV1_LRG' in zcat.columns:
+        targetclasses = ['SV1_BGS_BRIGHT', 'SV1_BGS_FAINT', 'SV1_LRG', 'SV1_ELG', 'SV1_QSO']
+    else:
+        targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'QSO']
+        
+    if 'VI_Z' in zcat.columns:
+        # For each VI spectype and targetclass, identify the objects
+        # where the current and the reference template set disagree and
+        # plot their spectra.
+        allout = []
+        for irow, spectype in enumerate(vi_spectypes):
+        #for irow, spectype in enumerate(['QSO']):#vi_spectypes):
+            #for icol, targetclass in enumerate(['QSO_ELG']):#targetclasses):
+            for icol, targetclass in enumerate(targetclasses):
+                I = np.where(zcat[targetclass] * (zcat['VI_SPECTYPE'] == spectype))[0]
+                N, _, _, Iout = getstats(zcat['Z'][I], zcat['VI_Z'][I], zcat['ZWARN'][I], indices=True, vcut=vcut)
+                #_, _, _, Irefout = getstats(refzcat['Z'][I], refzcat['VI_Z'][I], refzcat['ZWARN'][I], indices=True, vcut=vcut)
+
+                if len(Iout) > 0:
+                    #print(spectype, targetclass, len(Iout))
+                    out = Table()
+                    out['SPECTYPE'] = [spectype] * len(Iout)
+                    out['TARGETCLASS'] = [targetclass] * len(Iout)
+                    out = hstack((out, zcat[I[Iout]]['TILEID', 'FIBER', 'TARGETID', 'VI_Z', 'Z']))
+                    out[f'Z_{refrrtemplates.upper()}'] = refzcat[I[Iout]]['Z']
+                    out['VI_SPECTYPE'] = zcat[I[Iout]]['VI_SPECTYPE']
+                    out['SPECTYPE'] = zcat[I[Iout]]['SPECTYPE']
+                    out[f'SPECTYPE_{refrrtemplates.upper()}'] = refzcat[I[Iout]]['SPECTYPE']
+                    out['COADDFILE'] = [os.path.join(coadddir, f'coadd-{fiber//500}-{tileid}.fits')
+                                        for fiber, tileid in zip(zcat[I[Iout]]['FIBER'], zcat[I[Iout]]['TILEID'])]
+                    out['REDROCKFILE'] = [os.path.join(redrockdir, f'redrock-{fiber//500}-{tileid}.fits')
+                                          for fiber, tileid in zip(zcat[I[Iout]]['FIBER'], zcat[I[Iout]]['TILEID'])]
+                    out['REFREDROCKFILE'] = [os.path.join(refredrockdir, f'redrock-{fiber//500}-{tileid}.fits')
+                                             for fiber, tileid in zip(zcat[I[Iout]]['FIBER'], zcat[I[Iout]]['TILEID'])]
+                    ## identify the outliers in zcat that are correct in refzcat
+                    #O = Iout[np.logical_not(np.isin(Iout, Irefout))]
+                    #if len(O) > 0:
+                    #    out = zcat[I[O]]['TARGETID', 'VI_Z', 'Z']
+                    #    out[f'Z_{refrrtemplates.upper()}'] = refzcat[I[O]]['Z']
+                    #    out['VI_SPECTYPE'] = zcat[I[O]]['VI_SPECTYPE']
+                    #    out['SPECTYPE'] = zcat[I[O]]['SPECTYPE']
+                    #    out[f'SPECTYPE_{refrrtemplates.upper()}'] = refzcat[I[O]]['SPECTYPE']
+                    allout.append(out)
+        if len(allout) > 0:
+            allout = vstack(allout)
+    else:
+         raise NotImplementedError       
+
+    return allout
+    
+                
+def _qa_outliers(out, templates, reftemplates, inputsample, rrtemplates,
+                 refrrtemplates, pdffile, nsmooth=2):
+    """QA-building wrapper for qa_outliers.
+
+    """
+    from scipy.ndimage import gaussian_filter
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    from redrock.templates import eval_model
+    from redrock.results import read_zscan
+    from desispec.io import read_spectra
+    from desispec.resolution import Resolution
+    from desispec.io.util import replace_prefix
+
+    def padit(spectype):
+        if spectype == 'GALAXY':
+            return spectype
+        elif spectype == 'QSO':
+            return spectype.rjust(8)
+        elif spectype == 'STAR':
+            return spectype.rjust(9)
 
     sns.set(context='talk', style='ticks', font_scale=0.8, palette='Set2')
     colors = sns.color_palette()
+
+    bbox = dict(boxstyle='round', facecolor='lightgray', alpha=0.5)
+    zscancolors = {'GALAXY': 'k', 'STAR': 'k', 'QSO': 'k'}
+
+    pdf = PdfPages(pdffile)
+    for ipage, out1 in enumerate(out):
+        log.info(f'Building page {ipage+1}/{len(out)}')
+    
+        targetid = out1['TARGETID']
+        spec = read_spectra(out1['COADDFILE'], targetids=targetid)
+    
+        # evaluate the best-fitting redrock model for each template set
+        row = np.where(fitsio.read(out1['REDROCKFILE'], 'REDSHIFTS', columns='TARGETID') == targetid)[0]
+        zbest = Table(fitsio.read(out1['REDROCKFILE'], 'REDSHIFTS', rows=row))
+
+        refrow = np.where(fitsio.read(out1['REFREDROCKFILE'], 'REDSHIFTS', columns='TARGETID') == targetid)[0]
+        refzbest = Table(fitsio.read(out1['REFREDROCKFILE'], 'REDSHIFTS', rows=refrow))
+
+        R = {}
+        for cam in spec.bands:
+            R[cam] = [Resolution(spec.resolution_data[cam].squeeze())] # 1-length
+        rrmodel = eval_model(zbest, spec.wave, R=R, templates=templates)
+        refrrmodel = eval_model(refzbest, spec.wave, R=R, templates=reftemplates)
+            
+        flux, ivar, wave, tflux, reftflux = [], [], [], [], []
+        for cam in spec.bands:
+            wave.append(spec.wave[cam])
+            flux.append(spec.flux[cam].squeeze())
+            ivar.append(spec.ivar[cam].squeeze())
+            tflux.append(rrmodel[cam][0])
+            reftflux.append(refrrmodel[cam][0])
+
+        h5file = replace_prefix(out1['REDROCKFILE'], 'redrock-', 'rrdetails-').replace('.fits', '.h5')
+        #os.environ['DESI_LOGLEVEL'] = 'warning'
+        zscan, zfit = read_zscan(h5file, select_targetids=targetid)
+        #os.environ['DESI_LOGLEVEL'] = 'info'
+
+        fig, ax = plt.subplots(2, 1, figsize=(8, 6))
+        for icam, color, modelcolor in zip(range(len(spec.bands)),
+                                           ['dodgerblue', 'darkseagreen', 'orangered'],
+                                           ['darkblue', 'darkgreen', 'darkred']):
+            ax[0].plot(wave[icam], gaussian_filter(flux[icam], nsmooth), color=color, alpha=0.7)
+            ax[0].plot(wave[icam], gaussian_filter(tflux[icam], nsmooth), color=modelcolor, alpha=0.9)
+            ax[0].plot(wave[icam], gaussian_filter(reftflux[icam], nsmooth), color='k', alpha=0.9)
+            
+            ylims = np.percentile(np.hstack(flux), [1., 99.])
+            ax[0].set_ylim(0.5 * ylims[0], 1.5*ylims[1])
+            ax[0].set_xlabel(r'Observed-frame Wavelength ($\AA$)')
+            ax[0].set_ylabel(r'$F_{\lambda}\ (10^{-17}~{\rm erg}~{\rm s}^{-1}~{\rm cm}^{-2}~\AA^{-1})$')
+            ax[0].set_title(f'{inputsample}::{rrtemplates}: {out1["TILEID"]}-petal{out1["FIBER"]//500}/{out1["TARGETID"]}')
+
+        _z = out1["Z"]
+        _spectype = out1["SPECTYPE"]
+        _refz = out1[f"Z_{refrrtemplates.upper()}"]
+        _refspectype = out1[f"SPECTYPE_{refrrtemplates.upper()}"]
+        _viz = out1["VI_Z"]
+        _vispectype = out1["VI_SPECTYPE"]
+
+        txt = '\n'.join((
+            f'z({rrtemplates}): {_z:.4f}:{padit(_spectype)}',
+            f'z({refrrtemplates.upper()}): {_refz:.4f}:{padit(_refspectype)}',
+            f'z(VI): {_viz:.4f}:{padit(_vispectype)}',
+            ))
+        ax[0].text(0.97, 0.94, txt, ha='right', va='top',
+                   transform=ax[0].transAxes, fontsize=10, bbox=bbox)
+
+        # chi2 scan stuff
+        spectype = zbest['SPECTYPE'][0].strip()
+        subtype = zbest['SUBTYPE'][0].strip()
+        fulltype = (spectype, subtype)
+        if subtype != '':
+            sfulltype = f'{spectype}:::{subtype}'
+        else:
+            sfulltype = spectype
+
+        fig.tight_layout()
+        
+        pdf.savefig(fig)
+        plt.close()
+
+    pdf.close()
+    log.info(f'Wrote {pdffile}')
+        
+    pdb.set_trace()
+
+    
+def qa_outliers(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zscan_prior='zscan01',
+                vi_quality=3., vcut=3e3, nsmooth=2, nplotmax=5):
+    """Build outliers QA.
+
+    """
+    from redrock.templates import load_templates
 
     qadir = os.path.join(os.getenv('DESI_ROOT'), 'users', 'ioannis', 'tmp', 'qa', 'outliers')
     #qadir = os.path.join(projectdir, 'qa', 'outliers')
     if not os.path.isdir(qadir):
         os.makedirs(qadir, exist_ok=True)
-
-    vi_spectypes = ['STAR', 'GALAXY', 'QSO']
 
     for inputsample in np.atleast_1d(allinputsamples):
         refzcatfile = os.path.join(projectdir, f'zcat-{inputsample}-{refrrtemplates}-{zscan_prior}.fits')
@@ -554,33 +726,152 @@ def qa_outliers(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron', zsca
             log.debug(f'Read {len(zcat):,d} objects from {zcatfile}')
             assert(np.all(zcat['TARGETID'] == refzcat['TARGETID']))
 
-            if 'ELG_VLO_notQSO' in zcat.columns:
-                targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'QSO_ELG', 'QSO_notELG', 'ELG_LOP_notQSO', 'ELG_VLO_notQSO']
-            elif 'SV1_LRG' in zcat.columns:
-                targetclasses = ['SV1_BGS_BRIGHT', 'SV1_BGS_FAINT', 'SV1_LRG', 'SV1_ELG', 'SV1_QSO']
-            else:
-                targetclasses = ['BGS_BRIGHT', 'BGS_FAINT', 'LRG', 'ELG', 'QSO']
-                
-            if 'VI_Z' in zcat.columns:
-                # For each VI spectype and targetclass, identify the objects
-                # where the current and the reference template set disagree and
-                # plot their spectra.
-                for irow, spectype in enumerate(['QSO']):#vi_spectypes):
-                    for icol, targetclass in enumerate(['QSO_ELG']):#targetclasses):
-                        I = np.where(zcat[targetclass] * (zcat['VI_SPECTYPE'] == spectype))[0]
-                        N, _, _, Iout = getstats(zcat['Z'][I], zcat['VI_Z'][I], zcat['ZWARN'][I], indices=True)
-                        _, _, _, Irefout = getstats(refzcat['Z'][I], refzcat['VI_Z'][I], refzcat['ZWARN'][I], indices=True)
+            allout = _gather_outliers(zcat, refzcat, inputsample, rrtemplates, refrrtemplates=refrrtemplates,
+                                      zscan_prior=zscan_prior, vcut=vcut)
+            #allout.remove_columns(['COADDFILE', 'REDROCKFILE'])
+            if len(allout) == 0:
+                log.info('No outliers found!')
+                continue
 
-                        # identify the outliers in zcat that are correct in refzcat
-                        O = Iout[np.logical_not(np.isin(Iout, Irefout))]
-                        if len(O) > 0:
-                            out = zcat[I[O]]['TARGETID', 'VI_Z', 'Z']
-                            out[f'Z_{refrrtemplates.upper()}'] = refzcat[I[O]]['Z']
-                            out['VI_SPECTYPE'] = zcat[I[O]]['VI_SPECTYPE']
-                            out['SPECTYPE'] = zcat[I[O]]['SPECTYPE']
-                            out[f'SPECTYPE_{refrrtemplates.upper()}'] = refzcat[I[O]]['SPECTYPE']
-                            pdb.set_trace()
+            # load the templates
+            rrtemplatedir = os.path.join(projectdir, 'rrtemplates', rrtemplates)
+            refrrtemplatedir = os.path.join(projectdir, 'rrtemplates', refrrtemplates)
 
+            templates = load_templates(template_path=rrtemplatedir, zscan_galaxy=zscan_priors[zscan_prior], asdict=True)
+            reftemplates = load_templates(template_path=refrrtemplatedir, zscan_galaxy=zscan_priors[zscan_prior], asdict=True)
+
+            for spectype in sorted(set(allout['SPECTYPE'])):
+                for targetclass in sorted(set(allout['TARGETCLASS'])):
+                    I = (spectype == allout['SPECTYPE']) * (targetclass == allout['TARGETCLASS'])
+                    out = allout[I]
+
+                    if nplotmax is None:
+                        nplot = len(out)
+                    else:
+                        if nplotmax > len(out):
+                            nplot = len(out)
+                        else:
+                            nplot = nplotmax
+                            
+                    out = out[:nplot]
+
+                    pdffile = os.path.join(qadir, f'outliers-{inputsample}-{rrtemplates}-{zscan_prior}-{spectype}-{targetclass}.pdf')
+                    _qa_outliers(out, templates, reftemplates, inputsample, rrtemplates, refrrtemplates, pdffile)
+                    pdb.set_trace()
+
+
+
+#        fig, ax = plt.subplots(2, 1, figsize=(8, 6))
+#        for icam, color, modelcolor in zip(range(len(spec.bands)),
+#                                           ['dodgerblue', 'darkseagreen', 'orangered'],
+#                                           ['darkblue', 'darkgreen', 'darkred']):
+#            ax[0].plot(wave[icam], gaussian_filter(flux[icam], nsmooth), color=color, alpha=0.7)
+#            ax[0].plot(wave[icam], gaussian_filter(tflux[icam], nsmooth), color=modelcolor, alpha=0.9)
+#        ylims = np.percentile(np.hstack(flux), [1., 99.])
+#        ax[0].set_ylim(0.5 * ylims[0], 1.5*ylims[1])
+#        ax[0].set_xlabel(r'Observed-frame Wavelength ($\AA$)')
+#        ax[0].set_ylabel(r'$F_{\lambda}\ (10^{-17}~{\rm erg}~{\rm s}^{-1}~{\rm cm}^{-2}~\AA^{-1})$')
+#        ax[0].set_title(f'{rrmethod}-{rrversion}: {out1["TILEID"]}-petal{out1["FIBER"]//500}/{out1["TARGETID"]}')
+#
+#        txt = '\n'.join((
+#            f'z_RR: {out1["Z_RR_NEW"]:.4f}:{padit(out1["SPECTYPE_NEW"])}',
+#            f'Iron: {out1["Z_RR_IRON"]:.4f}:{padit(out1["SPECTYPE_IRON"])}',
+#            f'VI: {out1["VI_Z"]:.4f}:{padit(out1["VI_SPECTYPE"])}',
+#            ))
+#        ax[0].text(0.97, 0.94, txt, ha='right', va='top',
+#                   transform=ax[0].transAxes, fontsize=10, bbox=bbox)
+#
+#        zchi2 = zscan[targetid][sfulltype]['zchi2']
+#        redshifts = zscan[targetid][sfulltype]['redshifts']
+#        nn = np.min(zchi2)
+#        snn = str(int(np.log10(nn)))
+#        ax[1].plot(redshifts, zchi2/nn, color='k', alpha=0.7, label=r'$\chi^{2}$('+sfulltype+')')
+#        #ax[1].set_ylim(np.min(zchi2/nn), 1.2*np.max(zchi2/nn))
+#        #ax[1].set_yscale('log')
+#        #ax[1].yaxis.set_major_formatter(ticker.ScalarFormatter())
+#        ax[1].set_xlabel('Redshift')
+#        ax[1].set_ylabel(r'$\chi^{2}\ /\ 10^{'+snn+'}$')
+#        #ax[1].axhline(y=1., color='red', lw=1, alpha=0.7)
+#
+#        #if spectype != out1['VI_SPECTYPE']:
+#        #    ii = np.where(zfit['spectype'] == out1['VI_SPECTYPE'])[0][0] # first one
+#        #    if out1['VI_SPECTYPE'] == 'GALAXY':
+#        #        stype = zfit["spectype"][ii]
+#        #    else:
+#        #        stype = f'{zfit["spectype"][ii]}:::{zfit["subtype"][ii]}'
+#        #    #ax[1].axhline(y=zfit[ii]['chi2'], color='gray', ls='--', label=f'{stype}:nmin={ii+1}')
+#        #    #zchi2 = zscan[targetid][stype]['zchi2']
+#        #    #redshifts = zscan[targetid][stype]['redshifts']
+#        #    #ax[1].plot(redshifts, zchi2, color=zscancolors[out1['VI_SPECTYPE']], label=stype)
+#        #    #ax[1].plot([], [], ' ', label=f'{zfit["spectype"][ii]} ({get_nmin(ii+1)})')
+#
+#        igal = ','.join(np.where(zfit['spectype'] == 'GALAXY')[0].astype(str))
+#        iqso = ','.join(np.where(zfit['spectype'] == 'QSO')[0].astype(str))
+#        istar = ','.join(np.where(zfit['spectype'] == 'STAR')[0].astype(str))
+#
+#        txt = '\n'.join((
+#            r'$\chi^{2}$ minima:', 
+#            f'  QSO: {iqso}',
+#            f'  STAR: {istar}',
+#            f'  GALAXY: {igal}',
+#            ))
+#        ax[1].text(0.02, 0.94, txt, ha='left', va='top',
+#                   transform=ax[1].transAxes, fontsize=7, bbox=bbox)
+#
+#        # Did we get the right (VI) redshift at all? If so, plot it.
+#        G = np.where((zfit['spectype'] == out1['VI_SPECTYPE']) * (C_LIGHT * np.abs((zfit['z']-out1['VI_Z'])/(1.+out1['VI_Z'])) < 1e3))[0]
+#        if len(G) == 1:
+#            vspectype = zfit[G]['spectype'][0].strip()
+#            vsubtype = zfit[G]['subtype'][0].strip()
+#            vfulltype = (vspectype, vsubtype)
+#            if vsubtype != '':
+#                vsfulltype = f'{vspectype}:::{vsubtype}'
+#            else:
+#                vsfulltype = vspectype
+#            
+#            vncoeff = templates[vfulltype].flux.shape[0]
+#            vcoeff = zfit[G]['coeff'][0][0:vncoeff]
+#            vrrwave = templates[vfulltype].wave * (1. + zfit[G]['z'])
+#            vrrflux = templates[vfulltype].flux.T.dot(vcoeff)
+#
+#            vtflux = []
+#            for icam, cam in enumerate(spec.bands):
+#                R = Resolution(spec.resolution_data[cam].squeeze())
+#                vtflux.append(R.dot(resample_flux(wave[icam], vrrwave, vrrflux)))
+#                
+#            for icam, cam in enumerate(spec.bands):                
+#                ax[0].plot(wave[icam], gaussian_filter(vtflux[icam], nsmooth), color='gray', alpha=0.5)
+#
+#            if (spectype == 'STAR' and vspectype != 'STAR') or (spectype != 'STAR' and vspectype == 'STAR'):
+#                pass
+#            else:
+#                vzchi2 = zscan[targetid][vsfulltype]['zchi2']
+#                vredshifts = zscan[targetid][vsfulltype]['redshifts']
+#                ax[1].plot(vredshifts, vzchi2/nn, color='gray', label=r'$\chi^{2}$('+vsfulltype+')', alpha=0.7)
+#
+#            if (spectype == 'STAR' and vspectype != 'STAR') or (spectype != 'STAR' and vspectype == 'STAR'):
+#                pass
+#            else:
+#                ax[1].axvline(x=zfit[G]['z'], color='blue', lw=2, alpha=0.7, ls='--',
+#                              label=f'z_VI (min {G[0]})')
+#
+#            ## check chi2 calculation
+#            #print(np.sum(np.hstack(ivar) * (np.hstack(flux) - np.hstack(tflux))**2))
+#            #print(np.sum(np.hstack(ivar) * (np.hstack(flux) - np.hstack(vtflux))**2))
+#               
+#        ax[1].axvline(x=zrr, color='blue', lw=2, alpha=0.7, ls='-', label='z_RR')
+#
+#        ax[1].legend(loc='lower right', fontsize=8)
+#
+#        fig.tight_layout()
+#        
+#        pdf.savefig(fig)
+#        plt.close()
+#
+#    pdf.close()
+#    log.info(f'Wrote {pdffile}')
+#
+#
 
     
 def main():
