@@ -560,8 +560,9 @@ def _gather_outliers(zcat, refzcat, inputsample, rrtemplates, refrrtemplates='PC
                     out = Table()
                     out['SPECTYPE'] = [spectype] * len(Iout)
                     out['TARGETCLASS'] = [targetclass] * len(Iout)
-                    out = hstack((out, zcat[I[Iout]]['TILEID', 'FIBER', 'NIGHT', 'TARGETID', 'VI_Z', 'Z']))
+                    out = hstack((out, zcat[I[Iout]]['TILEID', 'FIBER', 'NIGHT', 'TARGETID', 'VI_Z', 'Z', 'ZWARN']))
                     out[f'Z_{refrrtemplates.upper()}'] = refzcat[I[Iout]]['Z']
+                    out[f'ZWARN_{refrrtemplates.upper()}'] = refzcat[I[Iout]]['ZWARN']
                     out['VI_SPECTYPE'] = zcat[I[Iout]]['VI_SPECTYPE']
                     out['SPECTYPE'] = zcat[I[Iout]]['SPECTYPE']
                     out[f'SPECTYPE_{refrrtemplates.upper()}'] = refzcat[I[Iout]]['SPECTYPE']
@@ -622,7 +623,7 @@ def _qa_outliers(out, templates, inputsample, rrtemplates, refrrtemplates,
             sfulltype = spectype
         return sfulltype
 
-    sns.set(context='talk', style='ticks', font_scale=0.65, palette='Set2')
+    sns.set(context='talk', style='ticks', font_scale=0.65, palette='Accent')
     colors = sns.color_palette()
 
     #bbox = dict(boxstyle='round', facecolor='lightgray', alpha=0.5)
@@ -674,39 +675,57 @@ def _qa_outliers(out, templates, inputsample, rrtemplates, refrrtemplates,
             zfit.rename_column(col, col.upper())
         for col in refzfit.colnames:
             refzfit.rename_column(col, col.upper())
+        ylims = np.percentile(np.hstack(flux), [5., 95.])
 
-        ylims = np.percentile(np.hstack(flux), [1., 99.])
+        figsize = (10, 7)
+        fig, ax = plt.subplots(2, 2, figsize=figsize)
         
-        fig, ax = plt.subplots(2, 2, figsize=(10, 7))
+        #orig = False
+        #if orig:
+        #    fig, ax = plt.subplots(2, 2, figsize=figsize)
+        #else:
+        #    fig = plt.figure(figsize=figsize)
+        #    ncols = 4 * 2 + 1 # 4 columns per panel plus a small gap
+        #    nrows = 4 * 2 + 1
+        #    height_ratios = np.hstack(([1.0]*4, 0.25, [1.0]*4)) # small gap
+        #    width_ratios = np.hstack(([1.0]*4, 0.25, [1.0]*4))
+        #    gs = fig.add_gridspec(nrows, ncols, height_ratios=height_ratios, width_ratios=width_ratios)
+        #
+        #    cutax = fig.add_subplot(gs[0:3, 5:8], projection=wcs) # rows x cols
+        #    sedax = fig.add_subplot(gs[0:3, 0:5])
+        #    specax = fig.add_subplot(gs[4:8, 0:5])
+        
         for icam, color, modelcolor in zip(range(len(spec.bands)),
                                            ['dodgerblue', 'darkseagreen', 'orangered'],
                                            ['darkblue', 'darkgreen', 'darkred']):
-            ax[0, 0].plot(wave[icam], gaussian_filter(flux[icam], nsmooth), color=color, alpha=0.7, lw=0.5)
-            ax[0, 0].plot(wave[icam], gaussian_filter(tflux[icam], nsmooth), color=modelcolor, alpha=0.9, lw=0.5)
-        ax[0, 0].set_ylim(0.5 * ylims[0], 1.5*ylims[1])
+            ax[0, 0].plot(wave[icam]/1e4, gaussian_filter(flux[icam], nsmooth), color=color, alpha=0.7, lw=0.5)
+            ax[0, 0].plot(wave[icam]/1e4, gaussian_filter(tflux[icam], nsmooth), color=modelcolor, alpha=0.9, lw=1)
+        ax[0, 0].set_ylim(0.5 * ylims[0], 1.3*ylims[1])
             
         for icam, color, modelcolor in zip(range(len(spec.bands)),
                                            ['dodgerblue', 'darkseagreen', 'orangered'],
                                            ['darkblue', 'darkgreen', 'darkred']):
-            ax[0, 1].plot(wave[icam], gaussian_filter(flux[icam], nsmooth), color=color, alpha=0.7, lw=0.5)
-            ax[0, 1].plot(wave[icam], gaussian_filter(reftflux[icam], nsmooth), color=modelcolor, alpha=0.9, lw=0.5)
-        ax[0, 1].set_ylim(0.5 * ylims[0], 1.5*ylims[1])
+            ax[0, 1].plot(wave[icam]/1e4, gaussian_filter(flux[icam], nsmooth), color=color, alpha=0.7, lw=0.5)
+            ax[0, 1].plot(wave[icam]/1e4, gaussian_filter(reftflux[icam], nsmooth), color=modelcolor, alpha=0.9, lw=1)
+        ax[0, 1].set_ylim(0.5 * ylims[0], 1.3*ylims[1])
             
         ax_twin = ax[0, 1].twinx()
         ax_twin.set_ylabel(r'$F_{\lambda}\ (10^{-17}~{\rm erg}~{\rm s}^{-1}~{\rm cm}^{-2}~\AA^{-1})$')
         ax_twin.set_ylim(ax[0, 0].get_ylim())
         
-        ax[0, 0].set_xlabel(r'Observed-frame Wavelength ($\AA$)')
+        ax[0, 0].set_xlabel(r'Observed-frame Wavelength ($\mu$m)')
         ax[0, 0].set_ylabel(r'$F_{\lambda}\ (10^{-17}~{\rm erg}~{\rm s}^{-1}~{\rm cm}^{-2}~\AA^{-1})$')
         ax[0, 0].set_title(f'{rrtemplates}::{zscan_prior}')
 
-        ax[0, 1].set_ylim(0.5 * ylims[0], 1.5*ylims[1])
-        ax[0, 1].set_xlabel(r'Observed-frame Wavelength ($\AA$)')
+        ax[0, 1].set_ylim(0.5 * ylims[0], 1.3*ylims[1])
+        ax[0, 1].set_xlabel(r'Observed-frame Wavelength ($\mu$m)')
         ax[0, 1].set_yticklabels([])
         ax[0, 1].set_title(f'{refrrtemplates}::{zscan_prior}')
 
         _z = out1["Z"]
+        _zwarn = out1["ZWARN"]
         _refz = out1[f"Z_{refrrtemplates.upper()}"]
+        _refzwarn = out1[f"ZWARN_{refrrtemplates.upper()}"]
         _viz = out1["VI_Z"]
 
         _spectype = out1["SPECTYPE"]
@@ -718,12 +737,12 @@ def _qa_outliers(out, templates, inputsample, rrtemplates, refrrtemplates,
 
         # chi2 scan stuff
         ax[1, 0].axhline(y=1., color='gray', lw=1, alpha=0.7, ls='-')
-        ax[1, 0].axvline(x=_z, color='blue', lw=2, alpha=0.9, ls='--', label=f'z={_z:.4f} ({sfulltype})')
+        ax[1, 0].axvline(x=_z, color='blue', lw=2, alpha=0.9, ls='--', label=f'z={_z:.4f} ({sfulltype})')#, zwarn={_zwarn})')
                          #label=f'z({rrtemplates.upper()})={_z:.4f}')
         ax[1, 0].axvline(x=_viz, color='red', lw=1, alpha=0.9, ls='-', label=r'z$_{\mathrm{VI}}$'+f'={_viz:.4f} ({_vispectype})')
 
         ax[1, 1].axhline(y=1., color='gray', lw=1, alpha=0.7, ls='-')
-        ax[1, 1].axvline(x=_refz, color='blue', lw=2, alpha=0.9, ls='--', label=f'z={_refz:.4f} ({refsfulltype})')
+        ax[1, 1].axvline(x=_refz, color='blue', lw=2, alpha=0.9, ls='--', label=f'z={_refz:.4f} ({refsfulltype})')#, zwarn={_refzwarn})')
                          #label=f'z({refrrtemplates.upper()})={_refz:.4f}')
         ax[1, 1].axvline(x=_viz, color='red', lw=1, alpha=0.9, ls='-', label=r'z$_{\mathrm{VI}}$'+f'={_viz:.4f} ({_vispectype})')
         
@@ -732,25 +751,39 @@ def _qa_outliers(out, templates, inputsample, rrtemplates, refrrtemplates,
 
         snn = str(int(np.log10(nn)))
         refsnn = str(int(np.log10(refnn)))
-        
+
+        #chi2ylims = np.percentile(zscan[targetid][sfulltype]['zchi2']/nn, [0., 90.])
         ax[1, 0].plot(zscan[targetid][sfulltype]['redshifts'], zscan[targetid][sfulltype]['zchi2']/nn,
                       lw=0.5, color='k', alpha=0.7)#, label=r'$\chi^{2}$('+sfulltype+')')
         ax[1, 0].set_ylabel(r'$\chi^{2}\ /\ 10^{'+snn+'}$')
         #ax[1, 0].set_ylabel(r'$\chi^{2}$'+f'({sfulltype})'+r' / $10^{'+snn+'}$')
         ax[1, 0].set_xlabel('Redshift')
-        ax[1, 0].set_ylim(0.9, ax[1, 0].get_ylim()[1]*1.3)
+        #ax[1, 0].set_ylim(chi2ylims)
+        #ax[1, 0].set_ylim(0.9, ax[1, 0].get_ylim()[1]*1.3)
+        #if np.ptp(zscan[targetid][sfulltype]['zchi2']/nn) > 2.:
+        #    ax[1, 0].set_yscale('log')
+        #    ylogscale = True
+        #else:
+        #    ylogscale = False
         chi2ylim = ax[1, 0].get_ylim()
 
         ax[1, 1].plot(refzscan[targetid][refsfulltype]['redshifts'], refzscan[targetid][refsfulltype]['zchi2']/refnn,
                       lw=0.5, color='k', alpha=0.7)#, label=r'$\chi^{2}$('+refsfulltype+')')
         ax[1, 1].set_xlabel('Redshift')
         ax[1, 1].set_yticklabels([])
-        ax[1, 1].set_ylim(0.9, ax[1, 1].get_ylim()[1]*1.3)
+        #ax[1, 1].set_ylim(0.9, ax[1, 1].get_ylim()[1]*1.3)
+        #if np.ptp(refzscan[targetid][refsfulltype]['zchi2']/refnn) > 2.:
+        #    ax[1, 1].set_yscale('log')
+        #    refylogscale = True
+        #else:
+        #    refylogscale = False
 
         ax_twin = ax[1, 1].twinx()
         ax_twin.set_ylabel(r'$\chi^{2}\ /\ 10^{'+refsnn+'}$')
         #ax_twin.set_ylabel(r'$\chi^{2}$'+f'({refsfulltype})'+r' / $10^{'+refsnn+'}$')
         ax_twin.set_ylim(ax[1, 1].get_ylim())
+        #if refylogscale:
+        #    ax_twin.set_yscale('log')
         
         # Did we get the right (VI) redshift at all? If so, plot it.
         Gall = getstats(zfit['Z'], out1['VI_Z'], np.zeros(len(zfit), np.int64), vcut=vcut, good=True)
@@ -760,26 +793,25 @@ def _qa_outliers(out, templates, inputsample, rrtemplates, refrrtemplates,
 
                 if True:
                     vrrmodel = eval_model(zfit[G], spec.wave, R=R, templates=templates)
-
                     vtflux = []
                     for cam in spec.bands:
                         vtflux.append(vrrmodel[cam][0])
                         
                     for icam in range(len(spec.bands)):
-                        ax[0, 0].plot(wave[icam], gaussian_filter(vtflux[icam], nsmooth),
-                                      color=colors[iG], alpha=0.4, lw=0.5)
+                        ax[0, 0].plot(wave[icam]/1e4, gaussian_filter(vtflux[icam], nsmooth),
+                                      color=colors[iG+5], alpha=0.4, lw=0.5)
                 #np.sum(np.hstack(ivar) * (np.hstack(flux) - np.hstack(tflux))**2), np.sum(np.hstack(ivar) * (np.hstack(flux) - np.hstack(vtflux))**2)
             
                 vsfulltype = get_sfulltype(zfit[G])
                 vnn = np.min(zscan[targetid][vsfulltype]['zchi2'])
                 ax[1, 0].plot(zscan[targetid][vsfulltype]['redshifts'], zscan[targetid][vsfulltype]['zchi2']/nn,
-                              color=colors[iG], alpha=0.5, lw=0.5, 
+                              color=colors[iG+5], alpha=0.4, lw=0.5, 
                               label='z$_{}$'.format(G[0]+1)+f'={zfit["Z"][G[0]]:.4f} ({vsfulltype})')
                               #label=r'$\chi^{2}$('+vsfulltype+')')
                 ax[1, 0].set_ylim(chi2ylim)
 
-        ax[1, 0].legend(loc='upper right', fontsize=8)
-        ax[1, 1].legend(loc='upper right', fontsize=8)
+        ax[1, 0].legend(loc='best', fontsize=8)
+        ax[1, 1].legend(loc='best', fontsize=8)
         
         txt = '\n'.join((
             f'{inputsample}',
@@ -812,6 +844,16 @@ def qa_outliers(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron',
     #from importlib import resources
     from redrock.templates import load_templates
 
+    def _select_subset(cat, nplotmax=None):
+        if nplotmax is None:
+            nplot = len(cat)
+        else:
+            if nplotmax > len(cat):
+                nplot = len(cat)
+            else:
+                nplot = nplotmax
+        return cat[:nplot]
+
     qadir = os.path.join(os.getenv('DESI_ROOT'), 'users', 'ioannis', 'tmp', 'qa', 'outliers')
     #qadir = os.path.join(projectdir, 'qa', 'outliers')
     if not os.path.isdir(qadir):
@@ -836,7 +878,8 @@ def qa_outliers(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron',
             log.debug(f'Read {len(zcat):,d} objects from {zcatfile}')
             assert(np.all(zcat['TARGETID'] == refzcat['TARGETID']))
 
-            allout = _gather_outliers(zcat, refzcat, inputsample, rrtemplates, refrrtemplates=refrrtemplates,
+            allout = _gather_outliers(zcat, refzcat, inputsample, rrtemplates,
+                                      refrrtemplates=refrrtemplates,
                                       zscan_prior=zscan_prior, vcut=vcut)
             #allout.remove_columns(['COADDFILE', 'REDROCKFILE'])
             if len(allout) == 0:
@@ -847,25 +890,35 @@ def qa_outliers(allinputsamples, allrrtemplates, refrrtemplates='PCA-Iron',
             rrtemplatedir = os.path.join(projectdir, 'rrtemplates', rrtemplates)
             templates = load_templates(template_path=rrtemplatedir, zscan_galaxy=zscan_priors[zscan_prior], asdict=True)
 
+            # by VI SPECTYPE
+            #for spectype in sorted(set(allout['VI_SPECTYPE'])):
+            for spectype in ['GALAXY']:
+                out = allout[spectype == allout['VI_SPECTYPE']]
+                #out = out[out['TARGETID'] == 39633354911387259]
+                if len(out) == 0:
+                    continue
+                out = _select_subset(out, nplotmax=nplotmax)
+                
+                pdffile = os.path.join(qadir, 'by-vispectype', f'outliers-{inputsample}-{rrtemplates}-{zscan_prior}-{spectype}.pdf')
+                if not os.path.isdir(os.path.dirname(pdffile)):
+                    os.makedirs(os.path.dirname(pdffile))
+                _qa_outliers(out, templates, inputsample, rrtemplates, refrrtemplates,
+                             zscan_prior, pdffile, vcut=vcut)
+            #return
+
+            # by TARGETCLASS
             #for targetclass in ['BGS_FAINT']:#sorted(set(allout['TARGETCLASS'])):
             for targetclass in sorted(set(allout['TARGETCLASS'])):
-                I = (targetclass == allout['TARGETCLASS'])
-                out = allout[I]
-
-                if len(out) > 0:
-                    if nplotmax is None:
-                        nplot = len(out)
-                    else:
-                        if nplotmax > len(out):
-                            nplot = len(out)
-                        else:
-                            nplot = nplotmax
-
-                    out = out[:nplot]
-                    pdffile = os.path.join(qadir, f'outliers-{inputsample}-{rrtemplates}-{zscan_prior}-{targetclass}.pdf')
-                    _qa_outliers(out, templates, inputsample, rrtemplates, refrrtemplates,
-                                 zscan_prior, pdffile, vcut=vcut)
-                    #return
+                out = allout[targetclass == allout['TARGETCLASS']]
+                if len(out) == 0:
+                    continue
+                out = _select_subset(out, nplotmax=nplotmax)
+                pdffile = os.path.join(qadir, 'by-targetclass', f'outliers-{inputsample}-{rrtemplates}-{zscan_prior}-{targetclass}.pdf')
+                if not os.path.isdir(os.path.dirname(pdffile)):
+                    os.makedirs(os.path.dirname(pdffile))
+                _qa_outliers(out, templates, inputsample, rrtemplates, refrrtemplates,
+                             zscan_prior, pdffile, vcut=vcut)
+                #return
 
                     
 def main():
@@ -883,7 +936,8 @@ def main():
     parser.add_argument('--inputsample', choices=allinputsamples, type=str, help='Input sample to analyze.')
     parser.add_argument('--rrtemplates', choices=allrrtemplates, type=str, help='Redrock templates.')
     parser.add_argument('--zscan-prior', default='zscan01', type=str, help='Galaxy redshift scan prior.')
-    parser.add_argument('--mp', type=int, default=1, help='number of multiprocessing cores')
+    parser.add_argument('--mp', type=int, default=1, help='Number of multiprocessing cores')
+    parser.add_argument('--nplotmax', type=int, default=None, help='Maximum number of pages to plot.')
     
     parser.add_argument('--gather-coadds', action='store_true', help='Gather the coadded spectra.')
     parser.add_argument('--run-redrock', action='store_true', help='Gather the coadded spectra.')
@@ -929,7 +983,7 @@ def main():
         tmp_allinputsamples = ['iron-cumulative-vi-main']
         tmp_allrrtemplates = ['Y3-0.2.1']
         qa_outliers(tmp_allinputsamples, tmp_allrrtemplates, refrrtemplates='PCA-Iron',
-                    zscan_prior=args.zscan_prior)
+                    zscan_prior=args.zscan_prior, nplotmax=args.nplotmax)
         
         
 if __name__ == '__main__':
