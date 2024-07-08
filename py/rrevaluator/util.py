@@ -10,7 +10,9 @@ import numpy as np
 from desiutil.log import get_logger
 log = get_logger()
 
-def getstats(z, ztrue, zwarn, vcut=3e3, indices=False):
+C_LIGHT = 299792.458 # [km/s]
+
+def getstats(z, ztrue, zwarn, vcut=3e3, indices=False, good=False):
     """
     * Purity = what fraction of redrock confident answers were actually correct?  i.e. #(goodz AND ZWARN=0)/#(ZWARN=0)
     * Completeness = what fraction of all good VI entries had correct and confident redshifts? i.e. #(goodz AND ZWARN=0)/#(total)
@@ -21,10 +23,11 @@ def getstats(z, ztrue, zwarn, vcut=3e3, indices=False):
     if Ntotal == 0:
         return 0, np.nan, np.nan, np.nan
 
-    C_LIGHT = 299792.458 # [km/s]
-
     dz = z - ztrue
     goodz = (C_LIGHT * np.abs(dz) / (1. + ztrue)) < vcut
+    if good:
+        return np.where(goodz)[0]
+        
     badz = np.logical_not(goodz)
     nozwarn = zwarn == 0
 

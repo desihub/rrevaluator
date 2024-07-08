@@ -339,6 +339,7 @@ def copy_redrock_from_specprod(sample, specprod='iron', coadd_type='cumulative',
                     alltargetids = fitsio.read(orig_redrockfile, ext='REDSHIFTS', columns='TARGETID')
                     rows = np.where(np.isin(alltargetids, targetids))[0]
     
+                    hdr = fitsio.read_header(orig_redrockfile)
                     zbest = fitsio.read(orig_redrockfile, ext='REDSHIFTS', rows=rows)
                     fm = fitsio.read(orig_redrockfile, ext='FIBERMAP', rows=rows)
     
@@ -349,7 +350,7 @@ def copy_redrock_from_specprod(sample, specprod='iron', coadd_type='cumulative',
                     assert(np.all(fm['TARGETID'] == targetids))
         
                     log.info(f'Writing {redrockfile}')
-                    fitsio.write(redrockfile, zbest, extname='REDSHIFTS', clobber=True)
+                    fitsio.write(redrockfile, zbest, extname='REDSHIFTS', clobber=True, header=hdr)
                     fitsio.write(redrockfile, fm, extname='FIBERMAP')
     
                     zscan, zfit = read_zscan(orig_rrdetailsfile, select_targetids=targetids)
